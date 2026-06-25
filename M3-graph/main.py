@@ -13,6 +13,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+from langchain_community.llms import Ollama
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
@@ -51,6 +53,9 @@ LOG_PATH = BASE_DIR / "scriptStories5OSM_py.log"
 USER_NAME = "moving"
 USER_ID = 52
 USER_IDENTIFIER = f"{USER_NAME}.{USER_ID}"
+M3_OLLAMA_MODEL = os.getenv("AUTOMATIC_WORKFLOW_M3_OLLAMA_MODEL", SETTINGS.ollama_model)
+SLIDE_TYPE_GEOGRAPHIC = "geographic"
+SLIDE_TYPE_NORMAL = "normal"
 
 # The Python port uses the same candidate Java runtimes used by the PHP script.
 JAVA_CANDIDATES = [
@@ -137,6 +142,69 @@ def safe_media_url(url: str) -> str:
     """Drop unsafe media URLs before writing StoryMap JSON."""
 
     return url if is_safe_external_url(url) else ""
+
+
+def fallback_slide_type(has_coordinates: bool) -> str:
+    """Choose a slide type without LLM help.
+
+    Geographic slides require coordinates; normal slides are used otherwise.
+    """
+
+    return SLIDE_TYPE_GEOGRAPHIC if has_coordinates else SLIDE_TYPE_NORMAL
+
+
+def normalize_slide_type(value: str, has_coordinates: bool) -> str:
+    """Normalize an LLM slide-type response to `geographic` or `normal`."""
+
+    cleaned = (value or "").strip().lower()
+    if cleaned in {SLIDE_TYPE_NORMAL, "standard", "plain", "non-geographic", "non geographic"}:
+        return SLIDE_TYPE_NORMAL
+    if cleaned in {SLIDE_TYPE_GEOGRAPHIC, "geo", "map", "mapped"}:
+        return fallback_slide_type(has_coordinates)
+    return fallback_slide_type(has_coordinates)
+
+
+def choose_slide_type_with_llm(
+    event_title: str,
+    description: str,
+    entity_labels: list[str],
+    has_coordinates: bool,
+) -> str:
+    """Ask Ollama whether an event should be a geographic or normal slide.
+
+    The model is advisory only. Invalid output, runtime errors, or a geographic
+    choice without coordinates fall back to deterministic coordinate-based logic.
+    """
+
+    prompt = f"""Choose the slide type for a narrative event.
+
+Return only one word: geographic or normal.
+
+Use geographic only when the event is mainly about a place, movement, territory, landscape, route, region, or local asset that benefits from a map.
+Use normal for abstract, conceptual, statistical, organizational, or concluding events.
+If no coordinates are available, return normal.
+
+Coordinates available: {"yes" if has_coordinates else "no"}
+Title: {event_title}
+Description: {description}
+Entities: {", ".join(entity_labels)}
+"""
+    try:
+        llm = Ollama(
+            model=M3_OLLAMA_MODEL,
+            system="You classify storymap slides. Answer only with geographic or normal.",
+            num_ctx=2048,
+            temperature=0.0,
+        )
+        response = str(llm.invoke(prompt)).strip()
+    except Exception as exc:
+        log_message(f"Slide type LLM failed for '{event_title}': {exc}")
+        return fallback_slide_type(has_coordinates)
+
+    slide_type = normalize_slide_type(response, has_coordinates)
+    if slide_type != response.lower():
+        log_message(f"Slide type LLM response '{response}' normalized to '{slide_type}'")
+    return slide_type
 
 
 def has_existing_outputs(csv_key: str) -> bool:
@@ -503,16 +571,24 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
         else:
             zoom = 13
 
+        has_coordinates = bool(event_lon and event_lat)
+        slide_type = choose_slide_type_with_llm(event_title, line[1], entity_labels, has_coordinates)
+        if slide_type == SLIDE_TYPE_NORMAL:
+            event_lon = ""
+            event_lat = ""
+            polygon = ""
+            zoom = 0
+
         event_id = f"ev{row_index}"
         json_object = {
             "_id": event_id,
-                "text": {"text": slide_text, "headline": safe_event_title},
+            "text": {"text": slide_text, "headline": safe_event_title},
             "location": {
                 "name": "",
                 "lat": float(event_lat) if event_lat else 0.0,
                 "lon": float(event_lon) if event_lon else 0.0,
                 "zoom": zoom,
-                "line": True,
+                "line": slide_type == SLIDE_TYPE_GEOGRAPHIC,
             },
             "media": {"url": selected_image},
             "date": "",
@@ -524,6 +600,7 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
             "end_date": {"year": "null", "month": "", "day": ""},
             "start_date": {"year": "null", "month": "", "day": ""},
             "type": event_type,
+            "slideType": slide_type,
             "longitud": event_lon,
             "unique_id": f"slide-{event_id}",
             "eventMedia": selected_image,

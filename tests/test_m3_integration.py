@@ -39,6 +39,7 @@ def test_process_csv_runs_triplify_success(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(m3, "LOG_PATH", tmp_path / "m3.log")
     monkeypatch.setattr(m3, "locate_java", lambda: "java")
     monkeypatch.setattr(m3, "fetch_qlever_polygon", lambda qid: "")
+    monkeypatch.setattr(m3, "choose_slide_type_with_llm", lambda *args: "geographic")
     monkeypatch.setattr(
         m3,
         "fetch_wikidata_entity",
@@ -67,6 +68,7 @@ def test_process_csv_runs_triplify_success(monkeypatch, tmp_path: Path) -> None:
     slide = (tmp_path / "storymap" / "N1_story_qids" / "slide.json").read_text(encoding="utf-8")
     assert "&lt;b&gt;Unsafe&lt;/b&gt;" in slide
     assert "javascript:bad" not in slide
+    assert '"slideType": "geographic"' in slide
 
 
 def test_process_csv_raises_when_required_triplify_fails(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
@@ -84,6 +86,7 @@ def test_process_csv_raises_when_required_triplify_fails(monkeypatch, tmp_path: 
     monkeypatch.setattr(m3, "SETTINGS", SimpleNamespace(require_owl=True, java_bin=None))
     monkeypatch.setattr(m3, "locate_java", lambda: "java")
     monkeypatch.setattr(m3, "fetch_qlever_polygon", lambda qid: "")
+    monkeypatch.setattr(m3, "choose_slide_type_with_llm", lambda *args: "normal")
     monkeypatch.setattr(m3, "fetch_wikidata_entity", lambda qid: {"results": {"bindings": []}})
     monkeypatch.setattr(
         m3.subprocess,
@@ -95,3 +98,51 @@ def test_process_csv_raises_when_required_triplify_fails(monkeypatch, tmp_path: 
 
     with pytest.raises(RuntimeError, match="Triplify failed"):
         m3.process_csv(input_file, "1_story_qids", "story_qids")
+
+
+def test_slide_type_classifier_uses_llm_response(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    m3 = load_m3_module()
+
+    class FakeOllama:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def invoke(self, prompt: str) -> str:
+            return "normal"
+
+    monkeypatch.setattr(m3, "Ollama", FakeOllama)
+
+    assert m3.choose_slide_type_with_llm("Conclusion", "Summary", [], True) == "normal"
+
+
+def test_slide_type_classifier_falls_back_without_coordinates(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    m3 = load_m3_module()
+
+    class FakeOllama:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def invoke(self, prompt: str) -> str:
+            return "geographic"
+
+    monkeypatch.setattr(m3, "Ollama", FakeOllama)
+
+    assert (
+        m3.choose_slide_type_with_llm("Landscape", "A mountain area", ["Alps"], False) == "normal"
+    )
+
+
+def test_slide_type_classifier_falls_back_on_exception(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    m3 = load_m3_module()
+    monkeypatch.setattr(m3, "LOG_PATH", Path("NUL"))
+
+    class FailingOllama:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def invoke(self, prompt: str) -> str:
+            raise RuntimeError("ollama unavailable")
+
+    monkeypatch.setattr(m3, "Ollama", FailingOllama)
+
+    assert m3.choose_slide_type_with_llm("Place", "A mapped place", ["Rome"], True) == "geographic"
