@@ -10,7 +10,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, quote
+from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -124,6 +124,19 @@ def first_image_from_cell(image_text: str) -> str:
         if first and first.lower() != "null":
             return first
     return ""
+
+
+def is_safe_external_url(url: str) -> bool:
+    """Return whether a generated media/hyperlink URL uses an allowed scheme."""
+
+    parsed = urlparse((url or "").strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def safe_media_url(url: str) -> str:
+    """Drop unsafe media URLs before writing StoryMap JSON."""
+
+    return url if is_safe_external_url(url) else ""
 
 
 def has_existing_outputs(csv_key: str) -> bool:
@@ -348,6 +361,10 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
     - enrich entities
     - write storymap/json/owl assets
     """
+    STORYMAP_DIR.mkdir(parents=True, exist_ok=True)
+    JSON_DIR.mkdir(parents=True, exist_ok=True)
+    OWL_DIR.mkdir(parents=True, exist_ok=True)
+
     rows = parse_csv_rows(path)
     if not rows:
         log_message(f"Empty CSV skipped: {path.name}")
@@ -361,6 +378,7 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
             continue
 
         event_title = line[0] if len(line) > 0 else ""
+        safe_event_title = escape(event_title)
         if row_index == 1 and not narration_title:
             narration_title = event_title
 
@@ -368,7 +386,7 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
         qids = [SPECIAL_QID_REPLACEMENTS.get(item.strip(), item.strip()) for item in line[3].split(",") if item.strip()] if len(line) > 3 else []
         entity_links = [build_wikidata_link(qid) for qid in qids]
         event_lon, event_lat = parse_entity_coords(line[4] if len(line) > 4 else "")
-        csv_image = first_image_from_cell(line[5] if len(line) > 5 else "")
+        csv_image = safe_media_url(first_image_from_cell(line[5] if len(line) > 5 else ""))
 
         if row_index == 1:
             final_storymap["A1"] = {
@@ -433,7 +451,13 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
                             if parts[0] == event_lon and parts[1] == event_lat:
                                 print((single_entity["enName"] or qid) + "</br>")
                                 entity_giving_coordinates = qid
-                                entity_giving_Geographiclabel = "<a href=https://www.wikidata.org/wiki/"+qid+" target='_blank'>" +  single_entity["enName"] + "</a>"
+                                entity_giving_Geographiclabel = (
+                                    "<a href='https://www.wikidata.org/wiki/"
+                                    + escape(qid)
+                                    + "' target='_blank'>"
+                                    + escape(single_entity["enName"])
+                                    + "</a>"
+                                )
 
                     single_entity["coordinatesPolygon"] = fetch_qlever_polygon(qid)
 
@@ -482,7 +506,7 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
         event_id = f"ev{row_index}"
         json_object = {
             "_id": event_id,
-            "text": {"text": slide_text, "headline": event_title},
+                "text": {"text": slide_text, "headline": safe_event_title},
             "location": {
                 "name": "",
                 "lat": float(event_lat) if event_lat else 0.0,
@@ -492,7 +516,7 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
             },
             "media": {"url": selected_image},
             "date": "",
-            "title": event_title,
+            "title": safe_event_title,
             "latitud": event_lat,
             "start": "",
             "end": "",
@@ -505,7 +529,7 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
             "eventMedia": selected_image,
             "eventMediaCaption": "",
             "notes": "",
-            "description": line[1],
+            "description": escape(line[1]),
             "position": row_index,
             "props": arr_props,
             "mapMarkerColor": map_color,

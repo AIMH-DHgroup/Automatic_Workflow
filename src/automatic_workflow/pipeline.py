@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -56,7 +57,16 @@ def run_step(script_dir: Path, script_name: str, *args: str) -> None:
 
     cmd = [sys.executable, script_name, *args]
     LOGGER.info("Running step", extra={"cmd": cmd, "cwd": str(script_dir)})
-    completed = subprocess.run(cmd, cwd=script_dir, check=False)
+    env = os.environ.copy()
+    # The legacy scripts are process boundaries. Avoid inheriting pytest-cov
+    # subprocess settings, which can create incompatible coverage data files on
+    # Windows when temporary fixture scripts are executed in integration tests.
+    env.pop("COVERAGE_PROCESS_START", None)
+    env.pop("COVERAGE_FILE", None)
+    for key in list(env):
+        if key.startswith("COV_CORE_"):
+            env.pop(key, None)
+    completed = subprocess.run(cmd, cwd=script_dir, check=False, env=env)
     if completed.returncode != 0:
         raise PipelineError(f"Step failed with exit code {completed.returncode}: {' '.join(cmd)}")
 
