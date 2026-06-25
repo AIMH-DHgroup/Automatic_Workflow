@@ -180,6 +180,21 @@ def choose_non_repeated_asset(candidates: list[str], previously_used: set[str]) 
     return clean_candidates[0] if clean_candidates else ""
 
 
+def choose_non_repeated_assets(candidates: list[str], previously_used: set[str]) -> list[str]:
+    """Choose all candidates not used by previous slides, preserving order.
+
+    If every candidate was already used, return the first candidate so the slide
+    still has a geometry instead of becoming empty.
+    """
+
+    clean_candidates: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in clean_candidates:
+            clean_candidates.append(candidate)
+    fresh = [candidate for candidate in clean_candidates if candidate not in previously_used]
+    return fresh if fresh else clean_candidates[:1]
+
+
 def fallback_slide_type(has_coordinates: bool) -> str:
     """Choose a slide type without LLM help.
 
@@ -523,6 +538,7 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
         entity_giving_coordinates = ""
         entity_giving_Geographiclabel = ""
         polygon_candidates: list[str] = []
+        geometry_candidates: list[dict[str, str]] = []
         slide_text = escape(line[1]) + " <h5>Entities</h5> "
         log_message(
             f"Event {row_index} ({event_title}) in {path.name} has {len(entity_links)} entity links"
@@ -566,6 +582,18 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
                 entity_image = safe_media_url(single_entity["image"])
                 if entity_image and entity_image not in image_candidates:
                     image_candidates.append(entity_image)
+                entity_label_for_geometry = (
+                    entity_labels[j] if j < len(entity_labels) else (single_entity["enName"] or qid)
+                )
+                if single_entity["coordinatesPoint"]:
+                    geometry_candidates.append(
+                        {
+                            "qid": qid,
+                            "label": entity_label_for_geometry,
+                            "type": "point",
+                            "geometry": single_entity["coordinatesPoint"],
+                        }
+                    )
 
                 if single_entity["coordinatesPoint"]:
                     point_inner = single_entity["coordinatesPoint"]
@@ -589,6 +617,14 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
                     single_entity["coordinatesPolygon"] = fetch_qlever_polygon(qid)
                     if single_entity["coordinatesPolygon"]:
                         polygon_candidates.append(single_entity["coordinatesPolygon"])
+                        geometry_candidates.append(
+                            {
+                                "qid": qid,
+                                "label": entity_label_for_geometry,
+                                "type": "polygon",
+                                "geometry": single_entity["coordinatesPolygon"],
+                            }
+                        )
 
                 if event_title not in {
                     "Interest on this VC",
@@ -640,7 +676,14 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
             zoom = 13
 
         selected_image = choose_non_repeated_asset(image_candidates, used_slide_images)
-        polygon = choose_non_repeated_asset(polygon_candidates, used_slide_polygons) or polygon
+        selected_polygons = choose_non_repeated_assets(polygon_candidates, used_slide_polygons)
+        selected_polygon_set = set(selected_polygons)
+        selected_geometries = [
+            geometry
+            for geometry in geometry_candidates
+            if geometry["type"] != "polygon" or geometry["geometry"] in selected_polygon_set
+        ]
+        polygon = (selected_polygons[0] if selected_polygons else "") or polygon
         if polygon:
             zoom = 5
 
@@ -652,6 +695,8 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
             event_lon = ""
             event_lat = ""
             polygon = ""
+            selected_polygons = []
+            selected_geometries = []
             zoom = 0
 
         event_id = f"ev{row_index}"
@@ -686,6 +731,8 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
             "props": arr_props,
             "mapMarkerColor": map_color,
             "polygon": polygon,
+            "polygons": selected_polygons,
+            "eventGeometries": selected_geometries,
             "backgroundImg": "https://tool.dlnarratives.eu/images/slideBlack.png",
             "eventPlaceLabel": entity_giving_Geographiclabel,
         }

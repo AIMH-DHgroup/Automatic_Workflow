@@ -120,8 +120,14 @@ def test_process_csv_uses_later_entity_assets_when_previous_slide_repeats(
 
     assert slides[0]["media"]["url"] == "https://example.org/old.jpg"
     assert slides[0]["polygon"] == "POLYGON((Q1))"
+    assert slides[0]["polygons"] == ["POLYGON((Q1))", "POLYGON((Q2))"]
+    assert {geometry["geometry"] for geometry in slides[0]["eventGeometries"]} >= {
+        "POLYGON((Q1))",
+        "POLYGON((Q2))",
+    }
     assert slides[1]["media"]["url"] == "https://example.org/new.jpg"
     assert slides[1]["polygon"] == "POLYGON((Q2))"
+    assert slides[1]["polygons"] == ["POLYGON((Q2))"]
 
 
 def test_process_csv_raises_when_required_triplify_fails(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
