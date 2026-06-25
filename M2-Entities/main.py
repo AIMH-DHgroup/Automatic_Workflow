@@ -1,3 +1,4 @@
+import argparse
 import os
 import csv
 import re
@@ -28,6 +29,17 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SETTINGS = WorkflowSettings.from_env(PROJECT_ROOT)
 INPUT_DIR = os.path.join(BASE_DIR, "input")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+
+AVAILABLE_M2_MODELS = (
+    "gemma2:9b-instruct-q8_0",
+    "llama3.1:8b",
+    "llama3.1:8b-instruct-q8_0",
+    "llama3:8b",
+    "mistral:7b",
+    "qwen2.5:7b",
+    "phi3:medium",
+)
+SELECTED_OLLAMA_MODEL = os.getenv("AUTOMATIC_WORKFLOW_M2_OLLAMA_MODEL", SETTINGS.ollama_model)
 
 
 SYSTEM_PROMPT = """recognize the entities in the text and, for each of them, find the exact title corresponding to the Wikipedia page. The final result should be a json like this:
@@ -88,12 +100,56 @@ def resolve_default_input_csv_path() -> str:
     return candidates[0]
 
 
+def available_m2_models() -> tuple[str, ...]:
+    """Return Ollama models supported by the M2 command-line selector."""
+
+    return AVAILABLE_M2_MODELS
+
+
+def configure_m2_model(model: str | None) -> str:
+    """Configure the Ollama model used by M2 entity extraction.
+
+    Args:
+        model: Optional model selected by the user. When omitted, the existing
+            environment/default model is kept.
+
+    Returns:
+        The model name that will be used.
+
+    Raises:
+        ValueError: If the selected model is not in `AVAILABLE_M2_MODELS`.
+    """
+
+    global SELECTED_OLLAMA_MODEL
+
+    selected = (model or SELECTED_OLLAMA_MODEL).strip()
+    if selected not in AVAILABLE_M2_MODELS:
+        supported = ", ".join(AVAILABLE_M2_MODELS)
+        raise ValueError(f"Unsupported M2 model '{selected}'. Supported models: {supported}")
+    SELECTED_OLLAMA_MODEL = selected
+    return SELECTED_OLLAMA_MODEL
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse M2 command-line arguments while preserving positional input usage."""
+
+    parser = argparse.ArgumentParser(description="Enrich narrative CSV rows with Wikidata entities")
+    parser.add_argument("input_csv", nargs="?", help="Narrative CSV produced by M1")
+    parser.add_argument(
+        "--model",
+        choices=AVAILABLE_M2_MODELS,
+        help="Ollama model to use for entity extraction",
+    )
+    parser.add_argument("--list-models", action="store_true", help="Print supported M2 models and exit")
+    return parser.parse_args(argv)
+
+
 # -------------------------
 # LLM
 # -------------------------
 def useLLM(text: str) -> str:
     llm = Ollama(
-        model=SETTINGS.ollama_model,
+        model=SELECTED_OLLAMA_MODEL,
         system=SYSTEM_PROMPT,
         num_ctx=4096,
         temperature=0.01,
@@ -526,8 +582,22 @@ def enrich_csv_with_wikidata_qids(input_csv_path: str) -> str:
     return output_path
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
+    """Command-line entry point for M2 entity enrichment."""
+
     SETTINGS.validate()
-    input_csv_path = sys.argv[1] if len(sys.argv) > 1 else resolve_default_input_csv_path()
+    args = parse_args(argv)
+    if args.list_models:
+        for model in available_m2_models():
+            print(model)
+        return 0
+
+    configure_m2_model(args.model)
+    input_csv_path = args.input_csv if args.input_csv else resolve_default_input_csv_path()
     out = enrich_csv_with_wikidata_qids(input_csv_path)
     print(f"Output CSV created -> {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

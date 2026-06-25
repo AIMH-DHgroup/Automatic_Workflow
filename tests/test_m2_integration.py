@@ -36,3 +36,17 @@ def test_m2_wikipedia_failure_outputs_empty_enrichment(monkeypatch, tmp_path: Pa
 
     assert output_path.exists()
     assert '"Event";"Rome is important.";"";"";"";""' in output_path.read_text(encoding="utf-8-sig")
+
+
+def test_m2_model_selection_validates_supported_models() -> None:
+    m2 = load_m2_module()
+
+    assert "gemma2:9b-instruct-q8_0" in m2.available_m2_models()
+    assert m2.configure_m2_model("llama3.1:8b") == "llama3.1:8b"
+
+    try:
+        m2.configure_m2_model("not-a-model")
+    except ValueError as exc:
+        assert "Unsupported M2 model" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected unsupported model to raise ValueError")

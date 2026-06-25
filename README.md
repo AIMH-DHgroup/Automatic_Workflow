@@ -52,6 +52,7 @@ Copy `.env.example` to `.env` for local notes, or export the variables in your s
 | Variable | Purpose | Default |
 |---|---|---|
 | `AUTOMATIC_WORKFLOW_OLLAMA_MODEL` | Ollama model for M1/M2 LLM calls | `gemma2:9b-instruct-q8_0` |
+| `AUTOMATIC_WORKFLOW_M2_OLLAMA_MODEL` | Optional M2-specific Ollama model from the supported list | unset |
 | `AUTOMATIC_WORKFLOW_WIKIDATA_USER_AGENT` | Wikimedia API User-Agent with contact info | `automatic-workflow/1.0 (contact: workflow@example.org)` |
 | `AUTOMATIC_WORKFLOW_JAVA_BIN` | Optional explicit Java executable | auto-detect |
 | `AUTOMATIC_WORKFLOW_REQUIRE_OWL` | Fail M3 if Java/Triplify cannot produce OWL | `0` |
@@ -81,6 +82,12 @@ python main.py "path\to\input.txt"
 
 cd ..\M2-Entities
 python main.py "path\to\narrative.csv"
+
+# Show supported M2 models
+python main.py --list-models
+
+# Choose an M2 model explicitly
+python main.py --model "llama3.1:8b" "path\to\narrative.csv"
 
 cd ..\M3-graph
 python main.py "path\to\narrative_qids.csv"
