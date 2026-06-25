@@ -103,6 +103,12 @@ mypy src
 pytest --cov
 ```
 
+Audit bundled Triplify jars with offline risk hints:
+
+```bash
+python scripts/audit_triplify_deps.py
+```
+
 ## Security Notes
 
 - Do not commit `.env`, generated outputs, logs, archives, or virtual environments.
