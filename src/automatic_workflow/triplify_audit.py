@@ -13,7 +13,7 @@ KNOWN_RISK_HINTS = {
     "commons-httpclient": "3.1 is end-of-life; replace with a maintained HTTP client if possible.",
     "commons-beanutils": "Old Commons BeanUtils versions have had deserialization-related CVEs.",
     "zookeeper": "3.4.x is end-of-life; review ZooKeeper CVEs before production use.",
-    "log4j": "Log4j 1.x is end-of-life; migrate or isolate this dependency.",
+    "log4j": "Review Log4j usage carefully; 1.x is end-of-life and old 2.x versions should be upgraded.",
     "sesame": "OpenRDF Sesame is discontinued; consider RDF4J-supported replacements.",
 }
 
