@@ -1,0 +1,120 @@
+# Automatic Workflow
+
+Automatic Workflow transforms narrative text or structured CSV data into:
+
+- narrative CSV files
+- Wikidata-enriched CSV files with entity labels, QIDs, coordinates, and images
+- StoryMap HTML assets
+- Triplify JSON
+- OWL files generated through Java Triplify
+
+The repository still supports the original module scripts, while shared code and new tooling live under `src/automatic_workflow`.
+
+## Repository Layout
+
+```text
+src/automatic_workflow/        Reusable package code
+tests/                         Pytest suite
+docs/                          Project documentation
+M1-Create_Narratives*/         Legacy narrative creation modules
+M2-Entities/                   Legacy entity enrichment module
+M3-graph/                      Legacy storymap/Triplify module
+run_pipeline.py                Backward-compatible pipeline wrapper
+```
+
+## Requirements
+
+- Python 3.11+
+- Ollama installed and running for `.txt` processing and entity extraction
+- Ollama model configured by `AUTOMATIC_WORKFLOW_OLLAMA_MODEL` defaulting to `gemma2:9b-instruct-q8_0`
+- Java installed for OWL generation through `M3-graph/Triplify/Triplify.jar`
+
+## Installation
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+```
+
+For development:
+
+```bash
+python -m pip install -e ".[dev]"
+pre-commit install
+```
+
+Copy `.env.example` to `.env` for local notes, or export the variables in your shell.
+
+## Configuration
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `AUTOMATIC_WORKFLOW_OLLAMA_MODEL` | Ollama model for M1/M2 LLM calls | `gemma2:9b-instruct-q8_0` |
+| `AUTOMATIC_WORKFLOW_WIKIDATA_USER_AGENT` | Wikimedia API User-Agent with contact info | `automatic-workflow/1.0 (contact: workflow@example.org)` |
+| `AUTOMATIC_WORKFLOW_JAVA_BIN` | Optional explicit Java executable | auto-detect |
+| `AUTOMATIC_WORKFLOW_REQUIRE_OWL` | Fail M3 if Java/Triplify cannot produce OWL | `0` |
+| `AUTOMATIC_WORKFLOW_LOG_LEVEL` | Logging level for package CLI | `INFO` |
+
+Before production use, set `AUTOMATIC_WORKFLOW_WIKIDATA_USER_AGENT` to a real project/contact address.
+
+## Usage
+
+Run the full workflow with the backward-compatible script:
+
+```bash
+python run_pipeline.py "path\to\input.txt"
+```
+
+Or use the installed console command:
+
+```bash
+automatic-workflow "path\to\input.txt"
+```
+
+Legacy module commands remain supported:
+
+```bash
+cd M1-Create_Narratives-alternative-2
+python main.py "path\to\input.txt"
+
+cd ..\M2-Entities
+python main.py "path\to\narrative.csv"
+
+cd ..\M3-graph
+python main.py "path\to\narrative_qids.csv"
+```
+
+## Workflow
+
+1. M1 reads a `.txt` input and creates `M1-Create_Narratives-alternative-2/output/<name>.csv`.
+2. The pipeline copies that CSV into `M2-Entities/input/`.
+3. M2 creates `M2-Entities/output/<name>_qids.csv`.
+4. The pipeline copies that CSV into `M3-graph/input/`.
+5. M3 creates StoryMap, JSON, and optional OWL artifacts under `M3-graph/output/`.
+
+## Development Checks
+
+```bash
+ruff check src tests
+ruff format --check src tests
+mypy src
+pytest --cov
+```
+
+## Security Notes
+
+- Do not commit `.env`, generated outputs, logs, archives, or virtual environments.
+- `M3-graph/Triplify/config.properties` no longer ships default database credentials. Use a private local config if Virtuoso storage is required.
+- Treat generated HTML as untrusted output if input narratives come from untrusted users.
+- The bundled Java Triplify dependencies should be audited before production deployment.
+
+## Documentation
+
+Additional documentation is in `docs/` and can be served with:
+
+```bash
+python -m pip install -e ".[docs]"
+mkdocs serve
+```

@@ -1,0 +1,8 @@
+site_name: Automatic Workflow
+site_description: Narrative enrichment workflow documentation
+theme:
+  name: material
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Development: development.md

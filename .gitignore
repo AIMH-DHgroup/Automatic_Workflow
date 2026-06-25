@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Local configuration and logs
+.env
+*.log
+
+# Runtime outputs
+M1-Create_Narratives/output/
+M1-Create_Narratives-alternative/output/
+M1-Create_Narratives-alternative-2/output/
+M2-Entities/output/
+M3-graph/output/
+M3-graph/scriptStories5OSM_py.log
+
+# Large/generated archives
+*.rar
+*.zip
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
