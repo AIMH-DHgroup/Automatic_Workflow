@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -69,6 +70,58 @@ def test_process_csv_runs_triplify_success(monkeypatch, tmp_path: Path) -> None:
     assert "&lt;b&gt;Unsafe&lt;/b&gt;" in slide
     assert "javascript:bad" not in slide
     assert '"slideType": "geographic"' in slide
+
+
+def test_process_csv_uses_later_entity_assets_when_previous_slide_repeats(
+    monkeypatch, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    m3 = load_m3_module()
+    input_file = tmp_path / "story_qids.csv"
+    input_file.write_text(
+        '"title";"description";"wikidata_names_en";"wikidata_qids";"wikidata_coords";"wikidata_images"\n'
+        '"Event 1";"First";"One,Two";"Q1,Q2";"1 1";"https://example.org/old.jpg,https://example.org/new.jpg"\n'
+        '"Event 2";"Second";"One,Two";"Q1,Q2";"1 1";"https://example.org/old.jpg,https://example.org/new.jpg"\n',
+        encoding="utf-8-sig",
+    )
+    monkeypatch.setattr(m3, "STORYMAP_DIR", tmp_path / "storymap")
+    monkeypatch.setattr(m3, "JSON_DIR", tmp_path / "json")
+    monkeypatch.setattr(m3, "OWL_DIR", tmp_path / "owl")
+    monkeypatch.setattr(m3, "LOG_PATH", tmp_path / "m3.log")
+    monkeypatch.setattr(m3, "locate_java", lambda: "")
+    monkeypatch.setattr(m3, "choose_slide_type_with_llm", lambda *args: "geographic")
+    monkeypatch.setattr(m3, "fetch_qlever_polygon", lambda qid: f"POLYGON(({qid}))")
+
+    def fake_entity(qid: str) -> dict[str, object]:
+        return {
+            "results": {
+                "bindings": [
+                    {
+                        "enName": {"value": qid},
+                        "enDesc": {"value": "Entity"},
+                        "coordinates": {"value": "Point(1 1)"},
+                        "image": {
+                            "value": "https://example.org/old.jpg"
+                            if qid == "Q1"
+                            else "https://example.org/new.jpg"
+                        },
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(m3, "fetch_wikidata_entity", fake_entity)
+
+    m3.process_csv(input_file, "1_story_qids", "story_qids")
+
+    payload = json.loads(
+        (tmp_path / "storymap" / "N1_story_qids" / "slide.json").read_text(encoding="utf-8")
+    )
+    slides = payload["slides"]
+
+    assert slides[0]["media"]["url"] == "https://example.org/old.jpg"
+    assert slides[0]["polygon"] == "POLYGON((Q1))"
+    assert slides[1]["media"]["url"] == "https://example.org/new.jpg"
+    assert slides[1]["polygon"] == "POLYGON((Q2))"
 
 
 def test_process_csv_raises_when_required_triplify_fails(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]

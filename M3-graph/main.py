@@ -59,10 +59,16 @@ SLIDE_TYPE_NORMAL = "normal"
 
 # The Python port uses the same candidate Java runtimes used by the PHP script.
 JAVA_CANDIDATES = [
-    Path(r"C:\Users\aimhd\.p2\pool\plugins\org.eclipse.justj.openjdk.hotspot.jre.full.win32.x86_64_21.0.8.v20250724-1412\jre\bin\java.exe"),
-    Path(r"C:\Users\aimhd\.vscode\extensions\redhat.java-1.54.0-win32-x64\jre\21.0.10-win32-x86_64\bin\java.exe"),
+    Path(
+        r"C:\Users\aimhd\.p2\pool\plugins\org.eclipse.justj.openjdk.hotspot.jre.full.win32.x86_64_21.0.8.v20250724-1412\jre\bin\java.exe"
+    ),
+    Path(
+        r"C:\Users\aimhd\.vscode\extensions\redhat.java-1.54.0-win32-x64\jre\21.0.10-win32-x86_64\bin\java.exe"
+    ),
     Path(r"C:\Users\aimhd\Downloads\Protege-5.6.7-win\Protege-5.6.7\jre\bin\java.exe"),
-    Path(r"C:\Users\aimhd\AppData\Roaming\ModrinthApp\meta\java_versions\zulu21.38.21-ca-jre21.0.5-win_x64\bin\java.exe"),
+    Path(
+        r"C:\Users\aimhd\AppData\Roaming\ModrinthApp\meta\java_versions\zulu21.38.21-ca-jre21.0.5-win_x64\bin\java.exe"
+    ),
 ]
 
 HTTP_HEADERS = {
@@ -84,6 +90,7 @@ def ensure_io_dirs() -> None:
     INPUT_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+
 def log_message(message: str) -> None:
     """Append one timestamped line to the Python log file."""
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -95,6 +102,7 @@ def parse_csv_rows(path: Path) -> list[list[str]]:
     """Read the semicolon-separated CSV produced by M2."""
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         return list(csv.reader(handle, delimiter=";", quotechar='"', doublequote=True))
+
 
 def parse_entity_coords(coord_text: str) -> tuple[str, str]:
     """Return the first valid `(lon, lat)` pair found in a M2 `wikidata_coords` cell."""
@@ -131,6 +139,20 @@ def first_image_from_cell(image_text: str) -> str:
     return ""
 
 
+def image_candidates_from_cell(image_text: str) -> list[str]:
+    """Return one safe image URL candidate per entity from a M2 image cell."""
+
+    candidates: list[str] = []
+    for entity_images in (image_text or "").split(","):
+        candidate = entity_images.strip()
+        if not candidate or candidate.lower() == "null":
+            continue
+        first = safe_media_url(candidate.split("|")[0].strip())
+        if first and first not in candidates:
+            candidates.append(first)
+    return candidates
+
+
 def is_safe_external_url(url: str) -> bool:
     """Return whether a generated media/hyperlink URL uses an allowed scheme."""
 
@@ -142,6 +164,20 @@ def safe_media_url(url: str) -> str:
     """Drop unsafe media URLs before writing StoryMap JSON."""
 
     return url if is_safe_external_url(url) else ""
+
+
+def choose_non_repeated_asset(candidates: list[str], previously_used: set[str]) -> str:
+    """Choose the first candidate not used by previous slides.
+
+    If all available candidates were already used, keep the first candidate to
+    preserve existing output instead of dropping media or polygons.
+    """
+
+    clean_candidates = [candidate for candidate in candidates if candidate]
+    for candidate in clean_candidates:
+        if candidate not in previously_used:
+            return candidate
+    return clean_candidates[0] if clean_candidates else ""
 
 
 def fallback_slide_type(has_coordinates: bool) -> str:
@@ -220,7 +256,8 @@ def has_existing_outputs(csv_key: str) -> bool:
 def resolve_default_input_csv_path() -> Path:
     ensure_io_dirs()
     candidates = sorted(
-        path for path in INPUT_DIR.iterdir()
+        path
+        for path in INPUT_DIR.iterdir()
         if path.is_file() and path.suffix.lower() == ".csv" and path.stem.lower().endswith("_qids")
     )
     if not candidates:
@@ -238,7 +275,9 @@ def http_get_json(url: str, timeout: int = 60) -> dict[str, Any] | None:
         return None
 
 
-def http_post_form_json(url: str, payload: dict[str, str], timeout: int = 60) -> dict[str, Any] | None:
+def http_post_form_json(
+    url: str, payload: dict[str, str], timeout: int = 60
+) -> dict[str, Any] | None:
     request = Request(
         url,
         data=urlencode(payload).encode("utf-8"),
@@ -289,6 +328,7 @@ OPTIONAL {{ ?uri wdt:P625 ?coordinates. }}
 """
     url = "https://query.wikidata.org/sparql?format=json&query=" + quote(query)
     return http_get_json(url) or {}
+
 
 def fetch_qlever_polygon(qid: str) -> str:
     """
@@ -352,7 +392,7 @@ def derive_narration_title(path: Path) -> str:
 
 def build_storymap_html(narration_title: str, id_narra: str) -> str:
     """Create the same basic HTML shell used by the PHP storymap output."""
-    return f'''<html>
+    return f"""<html>
 \t<head>
 \t\t<meta charset="UTF-8">
 \t\t<title>Narrative - {escape(narration_title)}</title>
@@ -389,7 +429,7 @@ def build_storymap_html(narration_title: str, id_narra: str) -> str:
 \t\t</div>
 \t\t<div id="mapdiv"></div>
 \t</body>
-</html>'''
+</html>"""
 
 
 def locate_java() -> str:
@@ -440,6 +480,8 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
 
     final_storymap: dict[str, Any] = {"slides": []}
     narration_title = derive_narration_title(path)
+    used_slide_images: set[str] = set()
+    used_slide_polygons: set[str] = set()
 
     for row_index, line in enumerate(rows[1:], start=1):
         if len(line) < 2 or not line[1]:
@@ -450,11 +492,21 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
         if row_index == 1 and not narration_title:
             narration_title = event_title
 
-        entity_labels = [item.strip() for item in line[2].split(",") if item.strip()] if len(line) > 2 else []
-        qids = [SPECIAL_QID_REPLACEMENTS.get(item.strip(), item.strip()) for item in line[3].split(",") if item.strip()] if len(line) > 3 else []
+        entity_labels = (
+            [item.strip() for item in line[2].split(",") if item.strip()] if len(line) > 2 else []
+        )
+        qids = (
+            [
+                SPECIAL_QID_REPLACEMENTS.get(item.strip(), item.strip())
+                for item in line[3].split(",")
+                if item.strip()
+            ]
+            if len(line) > 3
+            else []
+        )
         entity_links = [build_wikidata_link(qid) for qid in qids]
         event_lon, event_lat = parse_entity_coords(line[4] if len(line) > 4 else "")
-        csv_image = safe_media_url(first_image_from_cell(line[5] if len(line) > 5 else ""))
+        image_candidates = image_candidates_from_cell(line[5] if len(line) > 5 else "")
 
         if row_index == 1:
             final_storymap["A1"] = {
@@ -463,16 +515,18 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
                 "name": narration_title,
                 "author": USER_IDENTIFIER,
                 "idNarra": id_narra,
-                "coverImg": "https://tool.dlnarratives.eu/images/cover.png"
+                "coverImg": "https://tool.dlnarratives.eu/images/cover.png",
             }
 
-        selected_image = csv_image
         map_color, event_type = choose_default_event_style(event_title)
         arr_props: dict[str, Any] = {}
         entity_giving_coordinates = ""
         entity_giving_Geographiclabel = ""
+        polygon_candidates: list[str] = []
         slide_text = escape(line[1]) + " <h5>Entities</h5> "
-        log_message(f"Event {row_index} ({event_title}) in {path.name} has {len(entity_links)} entity links")
+        log_message(
+            f"Event {row_index} ({event_title}) in {path.name} has {len(entity_links)} entity links"
+        )
 
         for j, qid in enumerate(qids):
             entity_link = entity_links[j] if j < len(entity_links) else build_wikidata_link(qid)
@@ -509,11 +563,16 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
                 single_entity["enDesc"] = first.get("enDesc", {}).get("value", "")
                 single_entity["coordinatesPoint"] = first.get("coordinates", {}).get("value", "")
                 single_entity["image"] = first.get("image", {}).get("value", "")
+                entity_image = safe_media_url(single_entity["image"])
+                if entity_image and entity_image not in image_candidates:
+                    image_candidates.append(entity_image)
 
                 if single_entity["coordinatesPoint"]:
                     point_inner = single_entity["coordinatesPoint"]
                     if "(" in point_inner and ")" in point_inner:
-                        point_inner = point_inner[point_inner.find("(") + 1:point_inner.rfind(")")]
+                        point_inner = point_inner[
+                            point_inner.find("(") + 1 : point_inner.rfind(")")
+                        ]
                         parts = point_inner.split()
                         if len(parts) >= 2 and event_lon and event_lat:
                             if parts[0] == event_lon and parts[1] == event_lat:
@@ -528,6 +587,8 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
                                 )
 
                     single_entity["coordinatesPolygon"] = fetch_qlever_polygon(qid)
+                    if single_entity["coordinatesPolygon"]:
+                        polygon_candidates.append(single_entity["coordinatesPolygon"])
 
                 if event_title not in {
                     "Interest on this VC",
@@ -544,12 +605,18 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
                     event_type = "natural event"
                     map_color = "#2eb82e"
 
-                type_qids = [binding.get("type", {}).get("value", "").rsplit("/", 1)[-1] for binding in bindings if binding.get("type", {}).get("value")]
+                type_qids = [
+                    binding.get("type", {}).get("value", "").rsplit("/", 1)[-1]
+                    for binding in bindings
+                    if binding.get("type", {}).get("value")
+                ]
                 single_entity["type"] = type_qids
                 arr_props[qid]["class"] = classify_entity(single_entity, type_qids)
 
             final_storymap.setdefault("items", {})[qid] = single_entity
-            entity_label = entity_labels[j] if j < len(entity_labels) else (single_entity["enName"] or qid)
+            entity_label = (
+                entity_labels[j] if j < len(entity_labels) else (single_entity["enName"] or qid)
+            )
             slide_text += (
                 f"<span class='tl-entities'><a onmouseover='$(this).tooltip(); $(this).tooltip(\"show\")' "
                 f"data-toggle='tooltip' title='{escape(single_entity['enDesc'])}' target='_blank' href='{escape(entity_link)}'>"
@@ -564,6 +631,7 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
             if entity_info.get("coordinatesPolygon"):
                 polygon = entity_info["coordinatesPolygon"]
                 zoom = 5
+                polygon_candidates.insert(0, polygon)
             elif entity_info.get("coordinatesPoint"):
                 zoom = 13
             else:
@@ -571,8 +639,15 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
         else:
             zoom = 13
 
+        selected_image = choose_non_repeated_asset(image_candidates, used_slide_images)
+        polygon = choose_non_repeated_asset(polygon_candidates, used_slide_polygons) or polygon
+        if polygon:
+            zoom = 5
+
         has_coordinates = bool(event_lon and event_lat)
-        slide_type = choose_slide_type_with_llm(event_title, line[1], entity_labels, has_coordinates)
+        slide_type = choose_slide_type_with_llm(
+            event_title, line[1], entity_labels, has_coordinates
+        )
         if slide_type == SLIDE_TYPE_NORMAL:
             event_lon = ""
             event_lat = ""
@@ -612,11 +687,15 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
             "mapMarkerColor": map_color,
             "polygon": polygon,
             "backgroundImg": "https://tool.dlnarratives.eu/images/slideBlack.png",
-            "eventPlaceLabel": entity_giving_Geographiclabel
+            "eventPlaceLabel": entity_giving_Geographiclabel,
         }
 
         final_storymap.setdefault("events", {})[event_id] = json_object
         final_storymap["slides"].append(json_object)
+        if selected_image:
+            used_slide_images.add(selected_image)
+        if polygon:
+            used_slide_polygons.add(polygon)
 
     if not narration_title:
         log_message(f"No valid events found in {path.name}")
@@ -625,9 +704,13 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
     # Write storymap files.
     narrative_dir = STORYMAP_DIR / f"N{id_narra}"
     narrative_dir.mkdir(parents=True, exist_ok=True)
-    (narrative_dir / "slide.json").write_text(json.dumps(final_storymap, ensure_ascii=False), encoding="utf-8")
+    (narrative_dir / "slide.json").write_text(
+        json.dumps(final_storymap, ensure_ascii=False), encoding="utf-8"
+    )
     (narrative_dir / f"{path.name}.txt").write_text("", encoding="utf-8")
-    (narrative_dir / "index.html").write_text(build_storymap_html(narration_title, id_narra), encoding="utf-8")
+    (narrative_dir / "index.html").write_text(
+        build_storymap_html(narration_title, id_narra), encoding="utf-8"
+    )
     log_message(f"Wrote storymap assets for N{id_narra}")
 
     # Write Triplify JSON.
@@ -655,7 +738,9 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
             print(stderr)
         log_message(f"Triplify finished for N{id_narra} with exit code {completed.returncode}")
         if completed.returncode != 0 and SETTINGS.require_owl:
-            raise RuntimeError(f"Triplify failed for N{id_narra} with exit code {completed.returncode}")
+            raise RuntimeError(
+                f"Triplify failed for N{id_narra} with exit code {completed.returncode}"
+            )
     else:
         print(f"Java not found in PATH. Skipping Triplify for N{id_narra}</br>")
         log_message(f"Java not found, Triplify skipped for N{id_narra}")
