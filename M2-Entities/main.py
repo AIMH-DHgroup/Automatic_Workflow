@@ -31,6 +31,7 @@ INPUT_DIR = os.path.join(BASE_DIR, "input")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 
 AVAILABLE_M2_MODELS = (
+    "gemma3:12b",
     "gemma2:9b-instruct-q8_0",
     "llama3.1:8b",
     "llama3.1:8b-instruct-q8_0",

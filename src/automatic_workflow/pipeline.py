@@ -52,6 +52,34 @@ def resolve_default_m1_input(m1_input_dir: Path, legacy_default: Path) -> Path:
     raise FileNotFoundError(f"No .txt input files found in {m1_input_dir}")
 
 
+def prepare_first_line_title_input(source: Path, destination_dir: Path) -> tuple[Path, str]:
+    """Create an M1 input file without the first line and return its title.
+
+    Args:
+        source: Original text file whose first line is the narrative title.
+        destination_dir: M1 input directory where the prepared body file is written.
+
+    Returns:
+        Tuple of prepared text path and extracted title.
+
+    Raises:
+        ValueError: If the file has no non-empty first line or no remaining body text.
+    """
+
+    lines = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    if not lines or not lines[0].strip():
+        raise ValueError("First-line title mode requires a non-empty first line")
+    title = lines[0].strip()
+    body = "\n".join(lines[1:]).strip()
+    if not body:
+        raise ValueError("First-line title mode requires text after the first line")
+
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    prepared_path = destination_dir / f"{source.stem}_body{source.suffix}"
+    prepared_path.write_text(body + "\n", encoding="utf-8")
+    return prepared_path, title
+
+
 def run_step(script_dir: Path, script_name: str, *args: str) -> None:
     """Run a legacy module script and raise on failure."""
 
@@ -71,12 +99,18 @@ def run_step(script_dir: Path, script_name: str, *args: str) -> None:
         raise PipelineError(f"Step failed with exit code {completed.returncode}: {' '.join(cmd)}")
 
 
-def run_pipeline(input_txt: Path | None = None, root_dir: Path | None = None) -> dict[str, Path]:
+def run_pipeline(
+    input_txt: Path | None = None,
+    root_dir: Path | None = None,
+    first_line_title: bool = False,
+) -> dict[str, Path]:
     """Run the full M1 -> M2 -> M3 workflow.
 
     Args:
         input_txt: Optional explicit `.txt` input file.
         root_dir: Optional project root. Defaults to the package settings root.
+        first_line_title: Whether to use the first input line as narrative title
+            and send only the remaining text through M1/M2/M3.
 
     Returns:
         Paths to the main generated artifacts/directories.
@@ -107,7 +141,11 @@ def run_pipeline(input_txt: Path | None = None, root_dir: Path | None = None) ->
     if source_input.suffix.lower() != ".txt":
         raise ValueError(f"Pipeline input must be a .txt file: {source_input}")
 
-    step1_input = copy_to_module_input(source_input, m1_input_dir)
+    narrative_title: str | None = None
+    if first_line_title:
+        step1_input, narrative_title = prepare_first_line_title_input(source_input, m1_input_dir)
+    else:
+        step1_input = copy_to_module_input(source_input, m1_input_dir)
     step1_output = m1_output_dir / f"{step1_input.stem}.csv"
     step2_input = m2_input_dir / step1_output.name
     step2_output = m2_output_dir / f"{step1_output.stem}_qids{step1_output.suffix}"
@@ -123,7 +161,10 @@ def run_pipeline(input_txt: Path | None = None, root_dir: Path | None = None) ->
         raise PipelineError(f"Step 2 output not found: {step2_output}")
     copy_to_module_input(step2_output, m3_input_dir)
 
-    run_step(m3_dir, "main.py", str(step3_input))
+    if narrative_title:
+        run_step(m3_dir, "main.py", str(step3_input), "--title", narrative_title)
+    else:
+        run_step(m3_dir, "main.py", str(step3_input))
     storymap_dir = m3_output_dir / "HTML_Storymap"
     json_dir = m3_output_dir / "json"
     if not storymap_dir.exists() or not json_dir.exists():
@@ -143,12 +184,21 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Run the Automatic Workflow pipeline")
     parser.add_argument("input", nargs="?", type=Path, help="Optional input .txt file")
+    parser.add_argument(
+        "--first-line-title",
+        action="store_true",
+        help="Use the first line of the input TXT as narrative title and process only the remaining text",
+    )
     args = parser.parse_args(argv)
 
     settings = WorkflowSettings.from_env(Path(__file__).resolve().parents[2])
     configure_logging(settings.log_level)
     try:
-        outputs = run_pipeline(args.input, root_dir=settings.root_dir)
+        outputs = run_pipeline(
+            args.input,
+            root_dir=settings.root_dir,
+            first_line_title=args.first_line_title,
+        )
     except Exception as exc:
         LOGGER.error("Pipeline failed: %s", exc)
         return 1

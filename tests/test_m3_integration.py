@@ -26,6 +26,29 @@ def test_qlever_failure_returns_empty_polygon(monkeypatch) -> None:  # type: ign
     assert m3.fetch_qlever_polygon("Q123") == ""
 
 
+def test_process_csv_uses_title_override(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    m3 = load_m3_module()
+    input_file = tmp_path / "story_qids.csv"
+    input_file.write_text(
+        '"title";"description";"wikidata_names_en";"wikidata_qids";"wikidata_coords";"wikidata_images"\n'
+        '"Event";"Description";"";"";"";""\n',
+        encoding="utf-8-sig",
+    )
+    monkeypatch.setattr(m3, "STORYMAP_DIR", tmp_path / "storymap")
+    monkeypatch.setattr(m3, "JSON_DIR", tmp_path / "json")
+    monkeypatch.setattr(m3, "OWL_DIR", tmp_path / "owl")
+    monkeypatch.setattr(m3, "LOG_PATH", tmp_path / "m3.log")
+    monkeypatch.setattr(m3, "locate_java", lambda: "")
+    monkeypatch.setattr(m3, "choose_slide_type_with_llm", lambda *args: "normal")
+
+    m3.process_csv(input_file, "1_story_qids", "story_qids", "Custom Narrative")
+
+    payload = json.loads(
+        (tmp_path / "storymap" / "N1_story_qids" / "slide.json").read_text(encoding="utf-8")
+    )
+    assert payload["A1"]["name"] == "Custom Narrative"
+
+
 def test_process_csv_runs_triplify_success(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     m3 = load_m3_module()
     input_file = tmp_path / "story_qids.csv"

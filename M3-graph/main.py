@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import os
@@ -474,7 +475,12 @@ def locate_java() -> str:
     return ""
 
 
-def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
+def process_csv(
+    path: Path,
+    id_narra: str,
+    csv_key: str,
+    narration_title_override: str | None = None,
+) -> None:
     """
     Process one narrative CSV and write the storymap/json/owl assets.
 
@@ -494,7 +500,7 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
         return
 
     final_storymap: dict[str, Any] = {"slides": []}
-    narration_title = derive_narration_title(path)
+    narration_title = narration_title_override or derive_narration_title(path)
     used_slide_images: set[str] = set()
     used_slide_polygons: set[str] = set()
 
@@ -795,7 +801,7 @@ def process_csv(path: Path, id_narra: str, csv_key: str) -> None:
             raise RuntimeError("Java not found and OWL output is required")
 
 
-def main(csv_path: str | None = None) -> int:
+def main(csv_path: str | None = None, title: str | None = None) -> int:
     """Entry point of the Python port for one explicitly selected CSV."""
     SETTINGS.validate()
     ensure_io_dirs()
@@ -825,10 +831,13 @@ def main(csv_path: str | None = None) -> int:
     id_narra = f"1_{csv_key}"
     log_message(f"Processing CSV {selected_csv.name} as narrative N{id_narra}")
 
-    process_csv(selected_csv, id_narra, csv_key)
+    process_csv(selected_csv, id_narra, csv_key, narration_title_override=title)
     return 0
 
 
 if __name__ == "__main__":
-    input_csv_path = sys.argv[1] if len(sys.argv) > 1 else None
-    raise SystemExit(main(input_csv_path))
+    parser = argparse.ArgumentParser(description="Generate StoryMap, JSON, and OWL artifacts")
+    parser.add_argument("input_csv", nargs="?", help="Input *_qids.csv produced by M2")
+    parser.add_argument("--title", help="Optional narrative title override")
+    args = parser.parse_args()
+    raise SystemExit(main(args.input_csv, title=args.title))

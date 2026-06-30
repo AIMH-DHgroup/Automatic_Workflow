@@ -26,7 +26,7 @@ run_pipeline.py                Backward-compatible pipeline wrapper
 
 - Python 3.11+
 - Ollama installed and running for `.txt` processing and entity extraction
-- Ollama model configured by `AUTOMATIC_WORKFLOW_OLLAMA_MODEL` defaulting to `gemma2:9b-instruct-q8_0`
+- Ollama model configured by `AUTOMATIC_WORKFLOW_OLLAMA_MODEL` defaulting to `gemma3:12b`
 - Java installed for OWL generation through `M3-graph/Triplify/Triplify.jar`
 
 ## Installation
@@ -51,7 +51,7 @@ Copy `.env.example` to `.env` for local notes, or export the variables in your s
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `AUTOMATIC_WORKFLOW_OLLAMA_MODEL` | Ollama model for M1/M2 LLM calls | `gemma2:9b-instruct-q8_0` |
+| `AUTOMATIC_WORKFLOW_OLLAMA_MODEL` | Ollama model for M1/M2 LLM calls | `gemma3:12b` |
 | `AUTOMATIC_WORKFLOW_M2_OLLAMA_MODEL` | Optional M2-specific Ollama model from the supported list | unset |
 | `AUTOMATIC_WORKFLOW_M3_OLLAMA_MODEL` | Optional M3-specific Ollama model for geographic vs normal slide classification | unset |
 | `AUTOMATIC_WORKFLOW_WIKIDATA_USER_AGENT` | Wikimedia API User-Agent with contact info | `automatic-workflow/1.0 (contact: workflow@example.org)` |
@@ -68,6 +68,14 @@ Run the full workflow with the backward-compatible script:
 ```bash
 python run_pipeline.py "path\to\input.txt"
 ```
+
+If the first line of the TXT is the narrative title, enable first-line title mode:
+
+```bash
+python run_pipeline.py --first-line-title "path\to\input.txt"
+```
+
+In this mode, the first line is used as the generated narrative title and only the remaining text is sent through M1, M2, and M3.
 
 Or use the installed console command:
 

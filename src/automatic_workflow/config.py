@@ -11,7 +11,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_OLLAMA_MODEL = "gemma2:9b-instruct-q8_0"
+DEFAULT_OLLAMA_MODEL = "gemma3:12b"
 DEFAULT_USER_AGENT = "automatic-workflow/1.0 (contact: workflow@example.org)"
 
 
