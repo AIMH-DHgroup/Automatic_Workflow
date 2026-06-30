@@ -77,6 +77,14 @@ python run_pipeline.py --first-line-title "path\to\input.txt"
 
 In this mode, the first line is used as the generated narrative title and only the remaining text is sent through M1, M2, and M3.
 
+You can also provide the title explicitly:
+
+```bash
+python run_pipeline.py --title "Your Title" "path\to\input.txt"
+```
+
+If both `--title` and `--first-line-title` are provided, the first line is still removed from the text sent through the workflow, but `--title` takes precedence as the generated narrative title.
+
 Or use the installed console command:
 
 ```bash

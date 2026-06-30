@@ -103,6 +103,7 @@ def run_pipeline(
     input_txt: Path | None = None,
     root_dir: Path | None = None,
     first_line_title: bool = False,
+    title: str | None = None,
 ) -> dict[str, Path]:
     """Run the full M1 -> M2 -> M3 workflow.
 
@@ -111,6 +112,8 @@ def run_pipeline(
         root_dir: Optional project root. Defaults to the package settings root.
         first_line_title: Whether to use the first input line as narrative title
             and send only the remaining text through M1/M2/M3.
+        title: Optional explicit narrative title. When provided, it takes
+            precedence over any title extracted from the input file.
 
     Returns:
         Paths to the main generated artifacts/directories.
@@ -141,9 +144,10 @@ def run_pipeline(
     if source_input.suffix.lower() != ".txt":
         raise ValueError(f"Pipeline input must be a .txt file: {source_input}")
 
-    narrative_title: str | None = None
+    narrative_title: str | None = title.strip() if title and title.strip() else None
     if first_line_title:
-        step1_input, narrative_title = prepare_first_line_title_input(source_input, m1_input_dir)
+        step1_input, extracted_title = prepare_first_line_title_input(source_input, m1_input_dir)
+        narrative_title = narrative_title or extracted_title
     else:
         step1_input = copy_to_module_input(source_input, m1_input_dir)
     step1_output = m1_output_dir / f"{step1_input.stem}.csv"
@@ -189,6 +193,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Use the first line of the input TXT as narrative title and process only the remaining text",
     )
+    parser.add_argument(
+        "--title",
+        help="Explicit narrative title. Takes precedence over --first-line-title extraction",
+    )
     args = parser.parse_args(argv)
 
     settings = WorkflowSettings.from_env(Path(__file__).resolve().parents[2])
@@ -198,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
             args.input,
             root_dir=settings.root_dir,
             first_line_title=args.first_line_title,
+            title=args.title,
         )
     except Exception as exc:
         LOGGER.error("Pipeline failed: %s", exc)
