@@ -149,6 +149,44 @@ def test_run_pipeline_explicit_title_overrides_extracted_title(
     assert calls[2][2][-2:] == ("--title", "Explicit Title")
 
 
+def test_run_pipeline_can_select_alternative_entity_module_and_model(
+    monkeypatch: pytest.MonkeyPatch, project_layout: Path
+) -> None:
+    alternative_m2 = project_layout / "M2-Entities-alternative"
+    (alternative_m2 / "input").mkdir(parents=True)
+    (alternative_m2 / "output").mkdir(parents=True)
+    source = project_layout / "story.txt"
+    source.write_text("Body text", encoding="utf-8")
+    calls: list[tuple[Path, str, tuple[str, ...]]] = []
+
+    def fake_run_step(script_dir: Path, script_name: str, *args: str) -> None:
+        calls.append((script_dir, script_name, args))
+        if script_dir.name == "M1-Create_Narratives-alternative-2":
+            (script_dir / "output" / "story.csv").write_text(
+                "title,description\nOne,Text\n", encoding="utf-8"
+            )
+        elif script_dir.name == "M2-Entities-alternative":
+            assert args[:2] == ("--model", "llama3.1:8b")
+            (script_dir / "output" / "story_qids.csv").write_text(
+                '"title";"description";"wikidata_names_en";"wikidata_qids";"wikidata_coords";"wikidata_images"\n',
+                encoding="utf-8-sig",
+            )
+        elif script_dir.name == "M3-graph":
+            (script_dir / "output" / "HTML_Storymap").mkdir(parents=True, exist_ok=True)
+            (script_dir / "output" / "json").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(pipeline, "run_step", fake_run_step)
+    outputs = pipeline.run_pipeline(
+        source,
+        root_dir=project_layout,
+        entity_module="alternative",
+        entity_model="llama3.1:8b",
+    )
+
+    assert calls[1][0] == alternative_m2
+    assert outputs["qids_csv"].parent == alternative_m2 / "output"
+
+
 def test_run_pipeline_rejects_non_txt_input(project_layout: Path) -> None:
     source = project_layout / "story.csv"
     source.write_text("title,description\n", encoding="utf-8")

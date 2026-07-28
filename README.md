@@ -86,6 +86,16 @@ python run_pipeline.py --title "Your Title" "path\to\input.txt"
 
 If both `--title` and `--first-line-title` are provided, the first line is still removed from the text sent through the workflow, but `--title` takes precedence as the generated narrative title.
 
+To use the alternative map-focused entity extractor, which prioritizes
+geographic entities and adds images from Wikipedia pages, run:
+
+```bash
+python run_pipeline.py --entity-module alternative --entity-model "llama3.1:8b" "path\to\input.txt"
+```
+
+The original M2 extractor remains the default. The alternative extractor
+returns the same `*_qids.csv` format, so M3 can consume it without changes.
+
 Or use the installed console command:
 
 ```bash

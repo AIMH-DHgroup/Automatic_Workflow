@@ -104,6 +104,8 @@ def run_pipeline(
     root_dir: Path | None = None,
     first_line_title: bool = False,
     title: str | None = None,
+    entity_module: str = "original",
+    entity_model: str | None = None,
 ) -> dict[str, Path]:
     """Run the full M1 -> M2 -> M3 workflow.
 
@@ -114,6 +116,8 @@ def run_pipeline(
             and send only the remaining text through M1/M2/M3.
         title: Optional explicit narrative title. When provided, it takes
             precedence over any title extracted from the input file.
+        entity_module: Either `original` or `alternative` M2 implementation.
+        entity_model: Optional Ollama model passed to the selected M2 implementation.
 
     Returns:
         Paths to the main generated artifacts/directories.
@@ -121,9 +125,11 @@ def run_pipeline(
 
     settings = WorkflowSettings.from_env(root_dir=root_dir)
     settings.validate()
+    if entity_module not in {"original", "alternative"}:
+        raise ValueError("entity_module must be 'original' or 'alternative'")
     root = settings.root_dir
     m1_dir = root / "M1-Create_Narratives-alternative-2"
-    m2_dir = root / "M2-Entities"
+    m2_dir = root / ("M2-Entities-alternative" if entity_module == "alternative" else "M2-Entities")
     m3_dir = root / "M3-graph"
 
     m1_input_dir = m1_dir / "input"
@@ -160,7 +166,10 @@ def run_pipeline(
         raise PipelineError(f"Step 1 output not found: {step1_output}")
     copy_to_module_input(step1_output, m2_input_dir)
 
-    run_step(m2_dir, "main.py", str(step2_input))
+    m2_args = [str(step2_input)]
+    if entity_model:
+        m2_args = ["--model", entity_model, *m2_args]
+    run_step(m2_dir, "main.py", *m2_args)
     if not step2_output.exists():
         raise PipelineError(f"Step 2 output not found: {step2_output}")
     copy_to_module_input(step2_output, m3_input_dir)
@@ -197,6 +206,16 @@ def main(argv: list[str] | None = None) -> int:
         "--title",
         help="Explicit narrative title. Takes precedence over --first-line-title extraction",
     )
+    parser.add_argument(
+        "--entity-module",
+        choices=("original", "alternative"),
+        default="original",
+        help="M2 implementation to use for entity extraction",
+    )
+    parser.add_argument(
+        "--entity-model",
+        help="Ollama model for the selected M2 implementation",
+    )
     args = parser.parse_args(argv)
 
     settings = WorkflowSettings.from_env(Path(__file__).resolve().parents[2])
@@ -207,6 +226,8 @@ def main(argv: list[str] | None = None) -> int:
             root_dir=settings.root_dir,
             first_line_title=args.first_line_title,
             title=args.title,
+            entity_module=args.entity_module,
+            entity_model=args.entity_model,
         )
     except Exception as exc:
         LOGGER.error("Pipeline failed: %s", exc)
