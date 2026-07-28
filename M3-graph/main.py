@@ -55,6 +55,10 @@ USER_NAME = "moving"
 USER_ID = 52
 USER_IDENTIFIER = f"{USER_NAME}.{USER_ID}"
 M3_OLLAMA_MODEL = os.getenv("AUTOMATIC_WORKFLOW_M3_OLLAMA_MODEL", SETTINGS.ollama_model)
+STORYMAP_COVER_IMAGE = os.getenv(
+    "AUTOMATIC_WORKFLOW_COVER_IMAGE",
+    "https://tool.dlnarratives.eu/images/title-background.jpg",
+)
 SLIDE_TYPE_GEOGRAPHIC = "geographic"
 SLIDE_TYPE_NORMAL = "normal"
 
@@ -536,7 +540,7 @@ def process_csv(
                 "name": narration_title,
                 "author": USER_IDENTIFIER,
                 "idNarra": id_narra,
-                "coverImg": "https://tool.dlnarratives.eu/images/cover.png",
+                "coverImg": STORYMAP_COVER_IMAGE,
             }
 
         map_color, event_type = choose_default_event_style(event_title)

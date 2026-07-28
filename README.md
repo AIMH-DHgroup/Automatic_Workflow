@@ -54,6 +54,7 @@ Copy `.env.example` to `.env` for local notes, or export the variables in your s
 | `AUTOMATIC_WORKFLOW_OLLAMA_MODEL` | Ollama model for M1/M2 LLM calls | `gemma3:12b` |
 | `AUTOMATIC_WORKFLOW_M2_OLLAMA_MODEL` | Optional M2-specific Ollama model from the supported list | unset |
 | `AUTOMATIC_WORKFLOW_M3_OLLAMA_MODEL` | Optional M3-specific Ollama model for geographic vs normal slide classification | unset |
+| `AUTOMATIC_WORKFLOW_COVER_IMAGE` | StoryMap narrative cover image URL | `https://tool.dlnarratives.eu/images/title-background.jpg` |
 | `AUTOMATIC_WORKFLOW_WIKIDATA_USER_AGENT` | Wikimedia API User-Agent with contact info | `automatic-workflow/1.0 (contact: workflow@example.org)` |
 | `AUTOMATIC_WORKFLOW_JAVA_BIN` | Optional explicit Java executable | auto-detect |
 | `AUTOMATIC_WORKFLOW_REQUIRE_OWL` | Fail M3 if Java/Triplify cannot produce OWL | `0` |

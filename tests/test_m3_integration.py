@@ -95,6 +95,30 @@ def test_process_csv_runs_triplify_success(monkeypatch, tmp_path: Path) -> None:
     assert '"slideType": "geographic"' in slide
 
 
+def test_process_csv_uses_configured_cover_image(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    m3 = load_m3_module()
+    input_file = tmp_path / "story_qids.csv"
+    input_file.write_text(
+        '"title";"description";"wikidata_names_en";"wikidata_qids";"wikidata_coords";"wikidata_images"\n'
+        '"Event";"Description";"";"";"";""\n',
+        encoding="utf-8-sig",
+    )
+    monkeypatch.setattr(m3, "STORYMAP_DIR", tmp_path / "storymap")
+    monkeypatch.setattr(m3, "JSON_DIR", tmp_path / "json")
+    monkeypatch.setattr(m3, "OWL_DIR", tmp_path / "owl")
+    monkeypatch.setattr(m3, "LOG_PATH", tmp_path / "m3.log")
+    monkeypatch.setattr(m3, "STORYMAP_COVER_IMAGE", "https://example.org/cover.jpg")
+    monkeypatch.setattr(m3, "locate_java", lambda: "")
+    monkeypatch.setattr(m3, "choose_slide_type_with_llm", lambda *args: "normal")
+
+    m3.process_csv(input_file, "1_story_qids", "story_qids")
+
+    payload = json.loads(
+        (tmp_path / "storymap" / "N1_story_qids" / "slide.json").read_text(encoding="utf-8")
+    )
+    assert payload["A1"]["coverImg"] == "https://example.org/cover.jpg"
+
+
 def test_process_csv_uses_later_entity_assets_when_previous_slide_repeats(
     monkeypatch, tmp_path: Path
 ) -> None:  # type: ignore[no-untyped-def]
