@@ -1,15 +1,13 @@
 import argparse
 import os
-import csv
 import re
-import json
 import sys
 import time
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 import requests
-from json_repair import repair_json
 
 from langchain_community.llms import Ollama
 from langchain_core.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
@@ -19,7 +17,12 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from automatic_workflow.llm_json import (  # noqa: E402
+    extract_first_json_object,
+    parse_entities_response,
+)
 from automatic_workflow.config import WorkflowSettings  # noqa: E402
+from automatic_workflow.csv_utils import read_csv_rows, write_csv_rows  # noqa: E402
 
 
 # -------------------------
@@ -63,7 +66,17 @@ WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
 HTTP_TIMEOUT = 20
 
 # Wikidata SPARQL
+WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
+WIKIDATA_REST = "https://www.wikidata.org/w/rest.php/wikibase/v1"
+RESOLUTION_STRATEGIES = (
+    "wikipedia",
+    "wikidata",
+    "wikipedia_then_wikidata",
+    "wikidata_then_wikipedia",
+)
+RESOLUTION_STRATEGY = "wikipedia"
+ENTITY_QID_CACHE: Dict[Tuple[str, str], str] = {}
 
 # IMPORTANT: contatto reale per evitare 403/429
 USER_AGENT = SETTINGS.wikidata_user_agent
@@ -124,9 +137,8 @@ def configure_m2_model(model: str | None) -> str:
     global SELECTED_OLLAMA_MODEL
 
     selected = (model or SELECTED_OLLAMA_MODEL).strip()
-    if selected not in AVAILABLE_M2_MODELS:
-        supported = ", ".join(AVAILABLE_M2_MODELS)
-        raise ValueError(f"Unsupported M2 model '{selected}'. Supported models: {supported}")
+    if not selected:
+        raise ValueError("M2 model must not be empty")
     SELECTED_OLLAMA_MODEL = selected
     return SELECTED_OLLAMA_MODEL
 
@@ -138,8 +150,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("input_csv", nargs="?", help="Narrative CSV produced by M1")
     parser.add_argument(
         "--model",
-        choices=AVAILABLE_M2_MODELS,
         help="Ollama model to use for entity extraction",
+    )
+    parser.add_argument(
+        "--resolution-strategy",
+        choices=RESOLUTION_STRATEGIES,
+        default="wikipedia",
+        help="API order for resolving entity titles to Wikidata QIDs",
     )
     parser.add_argument("--list-models", action="store_true", help="Print supported M2 models and exit")
     return parser.parse_args(argv)
@@ -164,68 +181,13 @@ def useLLM(text: str) -> str:
 # JSON EXTRACT + REPAIR
 # -------------------------
 def estrai_json_da_stringa_ripara(stringa: str) -> Optional[str]:
-    """
-    Estrae il primo blocco { ... } dalla risposta dell'LLM,
-    ripulisce errori comuni e prova a riparare con json_repair.
-    Ritorna una stringa JSON valida o None.
-    """
-    if not stringa or not stringa.strip():
-        return None
-
-    s = stringa.strip()
-
-    # remove markdown fences if any
-    s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s*```$", "", s)
-
-    match = re.search(r"\{.*\}", s, re.DOTALL)
-    if not match:
-        return None
-
-    json_string = match.group(0)
-
-    # remove trailing commas before } or ]
-    json_string_pulito = re.sub(r",\s*(\}|\])", r"\1", json_string)
-
-    # direct parse attempt
-    try:
-        json.loads(json_string_pulito)
-        return json_string_pulito
-    except Exception:
-        pass
-
-    # repair attempt
-    try:
-        good_json_string = repair_json(json_string_pulito)
-        json.loads(good_json_string)
-        return good_json_string
-    except Exception:
-        return None
+    """Keep the legacy name while using the shared JSON parser."""
+    return extract_first_json_object(stringa)
 
 
 def parse_keywords_from_llm_output(llm_output: str) -> List[Dict[str, str]]:
-    fixed = estrai_json_da_stringa_ripara(llm_output)
-    if not fixed:
-        return []
-
-    try:
-        data = json.loads(fixed)
-    except Exception:
-        return []
-
-    kws = data.get("entities", [])
-    if not isinstance(kws, list):
-        return []
-
-    out: List[Dict[str, str]] = []
-    for item in kws:
-        if not isinstance(item, dict):
-            continue
-        kw = str(item.get("entity_in_the_text", "")).strip()
-        title = str(item.get("wikipedia_title", "")).strip()
-        if title:
-            out.append({"entity_in_the_text": kw, "wikipedia_title": title})
-    return out
+    """Keep the legacy name while using the shared entity response parser."""
+    return parse_entities_response(llm_output)
 
 
 def llm_keywords_safe(text: str) -> Tuple[List[Dict[str, str]], str]:
@@ -356,6 +318,100 @@ def fetch_wikidata_qids_from_titles(titles: List[str]) -> Dict[str, Optional[str
     return result
 
 
+def _search_wikidata_qids(
+    titles: List[str], entity_terms: Dict[str, str] | None = None
+) -> Dict[str, Optional[str]]:
+    """Resolve labels to QIDs using Wikidata search."""
+
+    result: Dict[str, Optional[str]] = {title: None for title in dict.fromkeys(titles) if title}
+    session = _make_session()
+    for title in result:
+        terms = [entity_terms.get(title, "").strip()] if entity_terms else []
+        terms.append(title)
+        for term in dict.fromkeys(term for term in terms if term):
+            response = _get_with_retries(
+                session,
+                WIKIDATA_API,
+                params={
+                    "action": "wbsearchentities",
+                    "search": term,
+                    "language": "en",
+                    "uselang": "en",
+                    "type": "item",
+                    "limit": 1,
+                    "format": "json",
+                },
+            )
+            search = response.json().get("search", [])
+            if search and search[0].get("id"):
+                result[title] = search[0]["id"]
+                break
+    return result
+
+
+def configure_resolution_strategy(strategy: str) -> str:
+    """Select the API strategy used to resolve entity titles."""
+
+    global RESOLUTION_STRATEGY
+    if strategy not in RESOLUTION_STRATEGIES:
+        raise ValueError(f"Unknown entity resolution strategy: {strategy}")
+    RESOLUTION_STRATEGY = strategy
+    return strategy
+
+
+def resolve_entity_qids(
+    titles: List[str], entity_terms: Dict[str, str] | None = None
+) -> Dict[str, Optional[str]]:
+    """Resolve titles according to the selected API order."""
+
+    entity_terms = entity_terms or {}
+    result: Dict[str, Optional[str]] = {}
+    pending: List[str] = []
+    for title in dict.fromkeys(titles):
+        key = (entity_terms.get(title, "").strip().casefold(), title.strip().casefold())
+        cached = ENTITY_QID_CACHE.get(key)
+        if cached:
+            result[title] = cached
+        else:
+            pending.append(title)
+
+    def store(found: Dict[str, Optional[str]]) -> None:
+        for title, qid in found.items():
+            if qid:
+                key = (entity_terms.get(title, "").strip().casefold(), title.strip().casefold())
+                ENTITY_QID_CACHE[key] = qid
+                result[title] = qid
+
+    def complete() -> Dict[str, Optional[str]]:
+        for title in pending:
+            result.setdefault(title, None)
+        return result
+
+    if not pending:
+        return result
+
+    if RESOLUTION_STRATEGY == "wikipedia":
+        store(fetch_wikidata_qids_from_titles(pending))
+        return complete()
+    if RESOLUTION_STRATEGY == "wikidata":
+        store(_search_wikidata_qids(pending, entity_terms))
+        return complete()
+    if RESOLUTION_STRATEGY == "wikipedia_then_wikidata":
+        primary = fetch_wikidata_qids_from_titles(pending)
+        store(primary)
+        missing = [title for title, qid in primary.items() if not qid]
+        fallback = _search_wikidata_qids(missing, entity_terms) if missing else {}
+        store(fallback)
+        return complete()
+
+    primary = _search_wikidata_qids(pending, entity_terms)
+    store(primary)
+    missing = [title for title, qid in primary.items() if not qid]
+    fallback = fetch_wikidata_qids_from_titles(missing) if missing else {}
+    store(fallback)
+    return complete()
+
+
 # -------------------------
 # WIKIDATA QID -> (label_en, images[], coords)
 # -------------------------
@@ -451,16 +507,60 @@ SELECT ?item ?itemLabel ?image ?coord WHERE {{
     return out
 
 
+def _fetch_wikidata_rest_details(qids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Fetch labels, images, and coordinates through Wikidata REST."""
+
+    session = _make_session()
+    details: Dict[str, Dict[str, Any]] = {
+        qid: {"label_en": None, "images": [], "coord": None} for qid in qids if _qid_ok(qid)
+    }
+    for qid in details:
+        response = _get_with_retries(session, f"{WIKIDATA_REST}/entities/items/{qid}")
+        entity = response.json()
+        labels = entity.get("labels", {}) if isinstance(entity, dict) else {}
+        english_label = labels.get("en", {}) if isinstance(labels, dict) else {}
+        label = english_label.get("value") if isinstance(english_label, dict) else None
+        claims = entity.get("claims", {}) if isinstance(entity, dict) else {}
+        if not isinstance(claims, dict):
+            claims = {}
+        details[qid]["label_en"] = label
+        for claim in claims.get("P18", []):
+            if not isinstance(claim, dict):
+                continue
+            mainsnak = claim.get("mainsnak", {})
+            datavalue = mainsnak.get("datavalue", {}) if isinstance(mainsnak, dict) else {}
+            filename = datavalue.get("value") if isinstance(datavalue, dict) else None
+            if isinstance(filename, str) and filename:
+                details[qid]["images"].append(
+                    f"https://commons.wikimedia.org/wiki/Special:FilePath/{quote(filename)}"
+                )
+        coordinate_claims = claims.get("P625", [])
+        coord = None
+        if isinstance(coordinate_claims, list) and coordinate_claims:
+            claim = coordinate_claims[0]
+            if isinstance(claim, dict):
+                mainsnak = claim.get("mainsnak", {})
+                datavalue = mainsnak.get("datavalue", {}) if isinstance(mainsnak, dict) else {}
+                coord = datavalue.get("value") if isinstance(datavalue, dict) else None
+        if isinstance(coord, dict):
+            details[qid]["coord"] = f"{coord.get('latitude')} {coord.get('longitude')}"
+    return details
+
+
+def resolve_entity_details(qids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Fetch entity details according to the selected API strategy."""
+
+    if RESOLUTION_STRATEGY == "wikipedia":
+        return fetch_wikidata_details_by_qids(qids)
+    return _fetch_wikidata_rest_details(qids)
+
+
 # -------------------------
 # CSV INPUT
 # -------------------------
 def read_input_csv_rows(path: str) -> List[List[str]]:
-    # M2 consumes the narrative CSV produced by M1, which is always comma-separated
-    # and uses standard doubled quotes for embedded ". Avoid Sniffer because it may
-    # infer `doublequote=False` on long narrative rows and split descriptions badly.
-    with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
-        reader = csv.reader(f, delimiter=",", quotechar='"', doublequote=True)
-        return list(reader)
+    """Keep the legacy API while using the shared CSV reader."""
+    return read_csv_rows(Path(path))
 
 
 # -------------------------
@@ -508,9 +608,14 @@ def enrich_csv_with_wikidata_qids(input_csv_path: str) -> str:
 
         # 2) Wikipedia -> QIDs
         try:
-            title_to_qid = fetch_wikidata_qids_from_titles(titles)
+            entity_terms = {
+                item["wikipedia_title"].strip(): item.get("entity_in_the_text", "").strip()
+                for item in keyword_items
+                if item.get("wikipedia_title")
+            }
+            title_to_qid = resolve_entity_qids(titles, entity_terms)
         except Exception as e:
-            print(f"[row {row_idx}] Wikipedia fetch failed: {e} | titles={titles}")
+            print(f"[row {row_idx}] Entity resolution failed: {e} | titles={titles}")
             out_rows.append(row + ["", "", "", ""])
             continue
 
@@ -529,9 +634,9 @@ def enrich_csv_with_wikidata_qids(input_csv_path: str) -> str:
 
         # 3) Wikidata SPARQL -> details (label, images[], coords)
         try:
-            details = fetch_wikidata_details_by_qids(qids)
+            details = resolve_entity_details(qids)
         except Exception as e:
-            print(f"[row {row_idx}] Wikidata SPARQL failed: {e} | qids={qids}")
+            print(f"[row {row_idx}] Wikidata details fetch failed: {e} | qids={qids}")
             out_rows.append(row + [ENTITY_SEP.join(qids), "", "", ""])
             continue
 
@@ -570,15 +675,13 @@ def enrich_csv_with_wikidata_qids(input_csv_path: str) -> str:
             time.sleep(SLEEP_BETWEEN_ROWS_SEC)
 
     # Write output (Excel-friendly)
-    with open(output_path, "w", newline="", encoding=OUTPUT_ENCODING) as out:
-        writer = csv.writer(
-            out,
-            delimiter=OUTPUT_DELIMITER,
-            quotechar='"',
-            quoting=csv.QUOTE_ALL,
-            lineterminator="\n",
-        )
-        writer.writerows(out_rows)
+    write_csv_rows(
+        Path(output_path),
+        out_rows,
+        delimiter=OUTPUT_DELIMITER,
+        encoding=OUTPUT_ENCODING,
+        quote_all=True,
+    )
 
     return output_path
 
@@ -594,6 +697,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     configure_m2_model(args.model)
+    configure_resolution_strategy(args.resolution_strategy)
     input_csv_path = args.input_csv if args.input_csv else resolve_default_input_csv_path()
     out = enrich_csv_with_wikidata_qids(input_csv_path)
     print(f"Output CSV created -> {out}")

@@ -29,7 +29,7 @@ def test_full_pipeline_with_fixture_scripts(tmp_path: Path) -> None:
         m3 / "main.py",
         "from pathlib import Path\nPath('output/HTML_Storymap').mkdir(parents=True, exist_ok=True)\nPath('output/json').mkdir(parents=True, exist_ok=True)\nPath('output/owl').mkdir(parents=True, exist_ok=True)\n",
     )
-    fixture = tmp_path / "fixture.txt"
+    fixture = tmp_path / "fixture.md"
     fixture.write_text("Fixture narrative", encoding="utf-8")
 
     outputs = run_pipeline(fixture, root_dir=tmp_path)

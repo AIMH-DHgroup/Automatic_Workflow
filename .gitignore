@@ -17,6 +17,13 @@ env/
 # Local configuration and logs
 .env
 *.log
+# Runtime inputs
+M1-Create_Narratives/input/
+M1-Create_Narratives-alternative/input/
+M1-Create_Narratives-alternative-2/input/
+M2-Entities/input/
+M3-graph/input/
+M3-narratia/input/
 
 # Runtime outputs
 M1-Create_Narratives/output/
@@ -24,11 +31,18 @@ M1-Create_Narratives-alternative/output/
 M1-Create_Narratives-alternative-2/output/
 M2-Entities/output/
 M3-graph/output/
-M3-graph/scriptStories5OSM_py.log
+M3-narratia/output/
 
 # Large/generated archives
 *.rar
 *.zip
+*.json
+*.csv
+
+venv/
+relik-venv/
+
+narratives_placemus/
 
 # OS/editor
 .DS_Store

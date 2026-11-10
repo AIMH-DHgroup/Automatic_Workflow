@@ -29,7 +29,12 @@ from automatic_workflow.text import (
 
 LOGGER = logging.getLogger(__name__)
 
-NarrativeMode = Literal["paragraphs", "json_events", "paragraphs_with_titles"]
+NarrativeMode = Literal[
+    "paragraphs", "json_events", "paragraphs_with_titles", "chunked", "pointer_titles"
+]
+
+CHUNK_WORDS = 500
+CHUNK_OVERLAP_WORDS = 50
 
 REGION_PAGES = [
     "https://www.moving-h2020.eu/reference_regions/austrian-alps-austria/",
@@ -79,12 +84,12 @@ def ensure_io_dirs(input_dir: Path, output_dir: Path) -> None:
 
 
 def resolve_default_input_path(input_dir: Path) -> Path:
-    """Resolve the default `.txt` or `.csv` input file for an M1 module."""
+    """Resolve the default text/Markdown or CSV input for an M1 module."""
 
     candidates = sorted(
         path
         for path in input_dir.iterdir()
-        if path.is_file() and path.suffix.lower() in {".txt", ".csv"}
+        if path.is_file() and path.suffix.lower() in {".txt", ".md", ".csv"}
     )
     if not candidates:
         raise FileNotFoundError(f"No .txt or .csv input files found in {input_dir}")
@@ -311,14 +316,25 @@ def process_csv(dataset_csv_path: Path, mapping_csv_path: Path, output_dir: Path
     return output_dir
 
 
-def invoke_ollama(system_prompt: str, prompt: str, settings: WorkflowSettings) -> str:
+def invoke_ollama(
+    system_prompt: str,
+    prompt: str,
+    settings: WorkflowSettings,
+    temperature: float = 0.01,
+    json_mode: bool = False,
+) -> str:
     """Invoke the configured local Ollama model."""
 
+    llm_kwargs = {
+        "model": settings.ollama_model,
+        "system": system_prompt,
+        "num_ctx": 4096,
+        "temperature": temperature,
+    }
+    if json_mode:
+        llm_kwargs["format"] = "json"
     llm = Ollama(
-        model=settings.ollama_model,
-        system=system_prompt,
-        num_ctx=4096,
-        temperature=0.01,
+        **llm_kwargs,
     )
     response = llm.invoke(prompt, config={"callbacks": [StreamingStdOutCallbackHandler()]})
     print()
@@ -334,6 +350,149 @@ def split_text_into_paragraphs(narrative: str, settings: WorkflowSettings) -> li
         settings,
     )
     return [part.strip() for part in re.split(r"\n\s*\n", llm_output) if part.strip()]
+
+
+def split_into_word_chunks(
+    text: str, chunk_words: int = CHUNK_WORDS, overlap_words: int = CHUNK_OVERLAP_WORDS
+) -> list[str]:
+    """Split text into word chunks with overlap for boundary context."""
+
+    if chunk_words <= 0 or overlap_words < 0 or overlap_words >= chunk_words:
+        raise ValueError("overlap_words must be >= 0 and smaller than chunk_words")
+    words = text.split()
+    step = chunk_words - overlap_words
+    return [" ".join(words[start : start + chunk_words]) for start in range(0, len(words), step)]
+
+
+def merge_overlapping_texts(
+    texts: list[str], overlap_words: int = CHUNK_OVERLAP_WORDS
+) -> str:
+    """Join chunk outputs once, removing their repeated word overlap."""
+
+    if not texts:
+        return ""
+    merged = texts[0].strip()
+    for text in texts[1:]:
+        previous_words = merged.split()
+        current_words = text.split()
+        overlap = _find_word_overlap(previous_words, current_words, overlap_words)
+        merged = " ".join(previous_words + current_words[overlap:])
+    return merged
+
+
+def _find_word_overlap(previous: list[str], current: list[str], limit: int) -> int:
+    """Return the largest suffix/prefix overlap between two word lists."""
+
+    overlap = min(limit, len(previous), len(current))
+    while overlap and previous[-overlap:] != current[:overlap]:
+        overlap -= 1
+    return overlap
+
+
+def merge_overlapping_paragraphs(
+    paragraph_groups: list[list[str]], overlap_words: int = CHUNK_OVERLAP_WORDS
+) -> list[str]:
+    """Recombine chunk paragraphs without flattening their event boundaries."""
+
+    merged: list[str] = []
+    for group in paragraph_groups:
+        paragraphs = [paragraph.strip() for paragraph in group if paragraph.strip()]
+        if not paragraphs:
+            continue
+        if not merged:
+            merged.extend(paragraphs)
+            continue
+
+        previous_words = merged[-1].split()
+        current_words = paragraphs[0].split()
+        overlap = _find_word_overlap(previous_words, current_words, overlap_words)
+        if overlap:
+            merged[-1] = " ".join(previous_words + current_words[overlap:])
+            merged.extend(paragraphs[1:])
+        else:
+            merged.extend(paragraphs)
+    return merged
+
+
+def split_text_in_chunks(narrative: str, settings: WorkflowSettings) -> list[str]:
+    """Split each 500-word chunk with Ollama and remove repeated overlaps."""
+
+    chunks = split_into_word_chunks(narrative)
+    split_chunks = [split_text_into_paragraphs(chunk, settings) for chunk in chunks]
+    return merge_overlapping_paragraphs(split_chunks)
+
+
+def split_text_into_sentences(narrative: str) -> list[tuple[int, int, str]]:
+    """Return deterministic character spans for sentence-like units."""
+
+    pattern = r"\S.*?(?:[.!?](?:['\"”’)]*)?(?=\s|$)|$)"
+    return [
+        (match.start(), match.end(), match.group().strip())
+        for match in re.finditer(pattern, narrative, re.DOTALL)
+    ]
+
+
+def group_sentences_for_fallback(text: str, sentences_per_event: int = 5) -> list[str]:
+    """Create bounded deterministic events when the pointer response is invalid."""
+
+    sentences = [sentence for _, _, sentence in split_text_into_sentences(text)]
+    return [
+        " ".join(sentences[index : index + sentences_per_event])
+        for index in range(0, len(sentences), sentences_per_event)
+    ]
+
+
+def split_text_by_pointers(narrative: str, settings: WorkflowSettings) -> list[str]:
+    """Use LLM sentence ranges and slice the original text locally."""
+
+    sentences = split_text_into_sentences(narrative)
+    if not sentences:
+        raise ValueError("Source text contains no sentence-like units")
+    numbered = "\n".join(f"[{index}] {sentence[2]}" for index, sentence in enumerate(sentences, 1))
+    response = invoke_ollama(
+        "Return only the JSON array requested by the user. Never write an explanation or prose.",
+        """Group the numbered sentences below into logical narrative events.
+Return only this JSON array shape, in the original order:
+[
+  {"start": 1, "end": 3},
+  {"start": 4, "end": 6}
+]
+
+Rules:
+- The values are sentence numbers, not character positions.
+- Every sentence number must be included exactly once.
+- Ranges must be consecutive, ordered, and non-overlapping.
+- The first range must start at sentence 1.
+- The final range must end at the last sentence.
+- Group related sentences when the subject, place, period, activity, or theme is shared.
+- Split one source paragraph into multiple events when it contains distinct concepts.
+- Return no explanation, Markdown fence, or text outside the JSON array.
+
+Sentences:
+""" + numbered,
+        settings,
+        temperature=0.0,
+        json_mode=True,
+    )
+    pointers = extract_json_array(response)
+    if not pointers:
+        raise ValueError("LLM returned no sentence pointers")
+
+    paragraphs: list[str] = []
+    cursor = 1
+    for pointer in pointers:
+        start = pointer.get("start")
+        end = pointer.get("end")
+        if not isinstance(start, int) or not isinstance(end, int):
+            raise ValueError("Sentence pointers must contain integer start and end values")
+        if start != cursor or end < start or end > len(sentences):
+            raise ValueError("Sentence pointers must cover the source in consecutive ranges")
+        paragraphs.append(narrative[sentences[start - 1][0] : sentences[end - 1][1]].strip())
+        cursor = end + 1
+
+    if cursor != len(sentences) + 1:
+        raise ValueError("Sentence pointers do not cover the complete source text")
+    return paragraphs
 
 
 def extract_json_array(text: str) -> list[dict[str, str]] | None:
@@ -388,27 +547,41 @@ def serialize_story_from_json(json_data: list[dict[str, str]]) -> str:
 
 
 def generate_titles_for_paragraphs(paragraphs: list[str], settings: WorkflowSettings) -> list[str]:
-    """Use Ollama to generate one title per paragraph."""
+    """Use Ollama to generate exactly one title from each paragraph."""
 
     if not paragraphs:
         return []
-    response = invoke_ollama(
-        "Write a title for each paragraph. Answer only with titles separated by semicolumns.",
-        "\n\n".join(paragraphs),
-        settings,
-    )
-    titles = [normalize_title(part) for part in response.replace("\r", "").split(";")]
-    titles = [title for title in titles if title]
-    if len(titles) > len(paragraphs):
-        LOGGER.warning(
-            "Received %s titles for %s paragraphs; extras ignored", len(titles), len(paragraphs)
+    titles: list[str] = []
+    for index, paragraph in enumerate(paragraphs, start=1):
+        response = invoke_ollama(
+            "Write one concise title for the provided event. Answer only with the title.",
+            paragraph,
+            settings,
         )
-        return titles[: len(paragraphs)]
-    if len(titles) < len(paragraphs):
-        LOGGER.warning(
-            "Received %s titles for %s paragraphs; fallbacks used", len(titles), len(paragraphs)
-        )
+        title = normalize_title(response.splitlines()[0] if response.strip() else "")
+        if not title:
+            LOGGER.warning("No title returned for event %s; fallback used", index)
+            title = f"event-{index}"
+        titles.append(title)
     return titles
+
+
+def report_text_preservation(source: str, generated: str) -> bool:
+    """Report whether M1 preserved the source text apart from whitespace layout."""
+
+    source_normalized = " ".join(source.split())
+    generated_normalized = " ".join(generated.split())
+    preserved = source_normalized == generated_normalized
+    status = "OK" if preserved else "WARNING"
+    print(
+        f"[M1] Text preservation check: {status}"
+        if preserved
+        else (
+            "[M1] Text preservation check: WARNING - the model changed or omitted "
+            "part of the source text"
+        )
+    )
+    return preserved
 
 
 def process_txt(
@@ -419,11 +592,25 @@ def process_txt(
     output_dir.mkdir(parents=True, exist_ok=True)
     text = txt_path.read_text(encoding="utf-8", errors="replace")
     if mode == "paragraphs":
-        story_csv = serialize_story_text(split_text_into_paragraphs(text, settings), [])
-    elif mode == "json_events":
-        story_csv = serialize_story_from_json(split_text_into_json_events(text, settings))
-    else:
         paragraphs = split_text_into_paragraphs(text, settings)
+        report_text_preservation(text, "\n\n".join(paragraphs))
+        story_csv = serialize_story_text(paragraphs, [])
+    elif mode == "json_events":
+        json_events = split_text_into_json_events(text, settings)
+        report_text_preservation(text, "\n\n".join(item.get("event", "") for item in json_events))
+        story_csv = serialize_story_from_json(json_events)
+    else:
+        if mode == "pointer_titles":
+            try:
+                paragraphs = split_text_by_pointers(text, settings)
+            except ValueError as exc:
+                print(f"[M1] Pointer splitting WARNING: {exc}; using source sentences")
+                paragraphs = group_sentences_for_fallback(text)
+        elif mode == "chunked":
+            paragraphs = split_text_in_chunks(text, settings)
+        else:
+            paragraphs = split_text_into_paragraphs(text, settings)
+        report_text_preservation(text, "\n\n".join(paragraphs))
         story_csv = serialize_story_text(
             paragraphs, generate_titles_for_paragraphs(paragraphs, settings)
         )
@@ -449,6 +636,6 @@ def run_m1_module(base_dir: Path, mode: NarrativeMode, input_path: str | None = 
         raise FileNotFoundError(f"File not found: {selected}")
     if selected.suffix.lower() == ".csv":
         return process_csv(selected, mapping_path, output_dir)
-    if selected.suffix.lower() == ".txt":
+    if selected.suffix.lower() in {".txt", ".md"}:
         return process_txt(selected, output_dir, mode, settings)
-    raise ValueError("Input path must end with .csv or .txt")
+    raise ValueError("Input path must end with .csv, .txt or .md")

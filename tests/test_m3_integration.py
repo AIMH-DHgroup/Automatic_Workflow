@@ -10,7 +10,7 @@ import pytest
 
 
 def load_m3_module() -> ModuleType:
-    module_path = Path(__file__).resolve().parents[1] / "M3-graph" / "main.py"
+    module_path = Path(__file__).resolve().parents[1] / "M3-narratia" / "main.py"
     spec = importlib.util.spec_from_file_location("m3_integration_main", module_path)
     assert spec is not None
     assert spec.loader is not None
@@ -21,7 +21,7 @@ def load_m3_module() -> ModuleType:
 
 def test_qlever_failure_returns_empty_polygon(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     m3 = load_m3_module()
-    monkeypatch.setattr(m3, "http_post_form_json", lambda url, payload: None)
+    monkeypatch.setattr(m3, "http_post_form_json", lambda url, payload, timeout=60: None)
 
     assert m3.fetch_qlever_polygon("Q123") == ""
 
@@ -208,30 +208,15 @@ def test_process_csv_raises_when_required_triplify_fails(monkeypatch, tmp_path: 
 
 def test_slide_type_classifier_uses_llm_response(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     m3 = load_m3_module()
-
-    class FakeOllama:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        def invoke(self, prompt: str) -> str:
-            return "normal"
-
-    monkeypatch.setattr(m3, "Ollama", FakeOllama)
+    monkeypatch.setattr(m3, "M3_USE_LLM", True)
+    monkeypatch.setattr(m3, "invoke_m3_ollama", lambda prompt: "normal")
 
     assert m3.choose_slide_type_with_llm("Conclusion", "Summary", [], True) == "normal"
 
 
 def test_slide_type_classifier_falls_back_without_coordinates(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     m3 = load_m3_module()
-
-    class FakeOllama:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        def invoke(self, prompt: str) -> str:
-            return "geographic"
-
-    monkeypatch.setattr(m3, "Ollama", FakeOllama)
+    monkeypatch.setattr(m3, "invoke_m3_ollama", lambda prompt: "geographic")
 
     assert (
         m3.choose_slide_type_with_llm("Landscape", "A mountain area", ["Alps"], False) == "normal"
@@ -240,15 +225,11 @@ def test_slide_type_classifier_falls_back_without_coordinates(monkeypatch) -> No
 
 def test_slide_type_classifier_falls_back_on_exception(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     m3 = load_m3_module()
+    monkeypatch.setattr(m3, "M3_USE_LLM", True)
     monkeypatch.setattr(m3, "LOG_PATH", Path("NUL"))
+    def fail(prompt: str) -> str:
+        raise RuntimeError("ollama unavailable")
 
-    class FailingOllama:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        def invoke(self, prompt: str) -> str:
-            raise RuntimeError("ollama unavailable")
-
-    monkeypatch.setattr(m3, "Ollama", FailingOllama)
+    monkeypatch.setattr(m3, "invoke_m3_ollama", fail)
 
     assert m3.choose_slide_type_with_llm("Place", "A mapped place", ["Rome"], True) == "geographic"

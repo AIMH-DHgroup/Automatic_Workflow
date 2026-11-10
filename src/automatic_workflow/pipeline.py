@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -40,16 +41,18 @@ def copy_to_module_input(source: Path, destination_dir: Path) -> Path:
 
 
 def resolve_default_m1_input(m1_input_dir: Path, legacy_default: Path) -> Path:
-    """Resolve the default M1 text input from `input/` or legacy sample file."""
+    """Resolve the default text/Markdown input from `input/` or legacy sample."""
 
     candidates = sorted(
-        path for path in m1_input_dir.iterdir() if path.is_file() and path.suffix.lower() == ".txt"
+        path
+        for path in m1_input_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in {".txt", ".md"}
     )
     if candidates:
         return candidates[0]
     if legacy_default.exists():
         return copy_to_module_input(legacy_default, m1_input_dir)
-    raise FileNotFoundError(f"No .txt input files found in {m1_input_dir}")
+    raise FileNotFoundError(f"No .txt or .md input files found in {m1_input_dir}")
 
 
 def prepare_first_line_title_input(source: Path, destination_dir: Path) -> tuple[Path, str]:
@@ -73,6 +76,27 @@ def prepare_first_line_title_input(source: Path, destination_dir: Path) -> tuple
     body = "\n".join(lines[1:]).strip()
     if not body:
         raise ValueError("First-line title mode requires text after the first line")
+
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    prepared_path = destination_dir / f"{source.stem}_body{source.suffix}"
+    prepared_path.write_text(body + "\n", encoding="utf-8")
+    return prepared_path, title
+
+
+def prepare_markdown_title_input(source: Path, destination_dir: Path) -> tuple[Path, str] | None:
+    """Remove a first-line Markdown heading and return it as the narrative title."""
+
+    lines = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    if not lines:
+        return None
+    match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", lines[0])
+    if not match:
+        return None
+
+    title = match.group(1).rstrip("#").strip()
+    body = "\n".join(lines[1:]).strip()
+    if not title or not body:
+        raise ValueError("Markdown title mode requires a title and text after the first line")
 
     destination_dir.mkdir(parents=True, exist_ok=True)
     prepared_path = destination_dir / f"{source.stem}_body{source.suffix}"
@@ -106,11 +130,17 @@ def run_pipeline(
     title: str | None = None,
     entity_module: str = "original",
     entity_model: str | None = None,
+    resolution_strategy: str = "wikipedia",
+    entity_backend: str = "ollama",
+    relik_model: str | None = None,
+    device: str | None = None,
+    m1_mode: str = "paragraphs_with_titles",
+    m3_module: str = "standard",
 ) -> dict[str, Path]:
     """Run the full M1 -> M2 -> M3 workflow.
 
     Args:
-        input_txt: Optional explicit `.txt` input file.
+        input_txt: Optional explicit `.txt` or `.md` input file.
         root_dir: Optional project root. Defaults to the package settings root.
         first_line_title: Whether to use the first input line as narrative title
             and send only the remaining text through M1/M2/M3.
@@ -118,6 +148,12 @@ def run_pipeline(
             precedence over any title extracted from the input file.
         entity_module: Either `original` or `alternative` M2 implementation.
         entity_model: Optional Ollama model passed to the selected M2 implementation.
+        resolution_strategy: API order used by M2 for title resolution.
+        entity_backend: Alternative M2 backend, either `ollama` or `relik`.
+        relik_model: Optional ReLiK model name or local path.
+        device: Optional ReLiK device such as `cpu` or `cuda`.
+        m1_mode: M1 text mode, either `paragraphs_with_titles` or `chunked`.
+        m3_module: M3 implementation, either `standard` or `narratia`.
 
     Returns:
         Paths to the main generated artifacts/directories.
@@ -127,10 +163,25 @@ def run_pipeline(
     settings.validate()
     if entity_module not in {"original", "alternative"}:
         raise ValueError("entity_module must be 'original' or 'alternative'")
+    if resolution_strategy not in {
+        "wikipedia",
+        "wikidata",
+        "wikipedia_then_wikidata",
+        "wikidata_then_wikipedia",
+    }:
+        raise ValueError("Unknown entity resolution strategy")
+    if entity_backend not in {"ollama", "relik"}:
+        raise ValueError("entity_backend must be 'ollama' or 'relik'")
+    if m1_mode not in {"paragraphs_with_titles", "chunked", "pointer_titles"}:
+        raise ValueError("m1_mode must be 'paragraphs_with_titles', 'chunked' or 'pointer_titles'")
+    if m3_module not in {"standard", "narratia"}:
+        raise ValueError("m3_module must be 'standard' or 'narratia'")
+    if entity_module == "original" and (entity_backend != "ollama" or relik_model or device):
+        raise ValueError("ReLiK options require entity_module='alternative'")
     root = settings.root_dir
     m1_dir = root / "M1-Create_Narratives-alternative-2"
     m2_dir = root / ("M2-Entities-alternative" if entity_module == "alternative" else "M2-Entities")
-    m3_dir = root / "M3-graph"
+    m3_dir = root / ("M3-narratia" if m3_module == "narratia" else "M3-graph")
 
     m1_input_dir = m1_dir / "input"
     m1_output_dir = m1_dir / "output"
@@ -147,11 +198,19 @@ def run_pipeline(
         if input_txt
         else resolve_default_m1_input(m1_input_dir, m1_dir / "dante.txt")
     )
-    if source_input.suffix.lower() != ".txt":
-        raise ValueError(f"Pipeline input must be a .txt file: {source_input}")
+    if source_input.suffix.lower() not in {".txt", ".md"}:
+        raise ValueError(f"Pipeline input must be a .txt or .md file: {source_input}")
 
     narrative_title: str | None = title.strip() if title and title.strip() else None
-    if first_line_title:
+    markdown_title = (
+        prepare_markdown_title_input(source_input, m1_input_dir)
+        if source_input.suffix.lower() == ".md"
+        else None
+    )
+    if markdown_title:
+        step1_input, extracted_title = markdown_title
+        narrative_title = narrative_title or extracted_title
+    elif first_line_title:
         step1_input, extracted_title = prepare_first_line_title_input(source_input, m1_input_dir)
         narrative_title = narrative_title or extracted_title
     else:
@@ -161,7 +220,12 @@ def run_pipeline(
     step2_output = m2_output_dir / f"{step1_output.stem}_qids{step1_output.suffix}"
     step3_input = m3_input_dir / step2_output.name
 
-    run_step(m1_dir, "main.py", str(step1_input))
+    m1_args = [str(step1_input)]
+    if m1_mode == "chunked":
+        m1_args.insert(0, "--chunked")
+    elif m1_mode == "pointer_titles":
+        m1_args.insert(0, "--pointer-titles")
+    run_step(m1_dir, "main.py", *m1_args)
     if not step1_output.exists():
         raise PipelineError(f"Step 1 output not found: {step1_output}")
     copy_to_module_input(step1_output, m2_input_dir)
@@ -169,15 +233,25 @@ def run_pipeline(
     m2_args = [str(step2_input)]
     if entity_model:
         m2_args = ["--model", entity_model, *m2_args]
+    if resolution_strategy != "wikipedia":
+        m2_args = ["--resolution-strategy", resolution_strategy, *m2_args]
+    if entity_module == "alternative":
+        if entity_backend != "ollama":
+            m2_args = ["--backend", entity_backend, *m2_args]
+        if relik_model:
+            m2_args = ["--relik-model", relik_model, *m2_args]
+        if device:
+            m2_args = ["--device", device, *m2_args]
     run_step(m2_dir, "main.py", *m2_args)
     if not step2_output.exists():
         raise PipelineError(f"Step 2 output not found: {step2_output}")
     copy_to_module_input(step2_output, m3_input_dir)
 
+    m3_script = "main.py"
     if narrative_title:
-        run_step(m3_dir, "main.py", str(step3_input), "--title", narrative_title)
+        run_step(m3_dir, m3_script, str(step3_input), "--title", narrative_title)
     else:
-        run_step(m3_dir, "main.py", str(step3_input))
+        run_step(m3_dir, m3_script, str(step3_input))
     storymap_dir = m3_output_dir / "HTML_Storymap"
     json_dir = m3_output_dir / "json"
     if not storymap_dir.exists() or not json_dir.exists():
@@ -196,11 +270,11 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point for the full workflow."""
 
     parser = argparse.ArgumentParser(description="Run the Automatic Workflow pipeline")
-    parser.add_argument("input", nargs="?", type=Path, help="Optional input .txt file")
+    parser.add_argument("input", nargs="?", type=Path, help="Optional input .txt or .md file")
     parser.add_argument(
         "--first-line-title",
         action="store_true",
-        help="Use the first line of the input TXT as narrative title and process only the remaining text",
+        help="Use the first line of a TXT input as narrative title and process only the remaining text",
     )
     parser.add_argument(
         "--title",
@@ -216,6 +290,32 @@ def main(argv: list[str] | None = None) -> int:
         "--entity-model",
         help="Ollama model for the selected M2 implementation",
     )
+    parser.add_argument(
+        "--resolution-strategy",
+        choices=("wikipedia", "wikidata", "wikipedia_then_wikidata", "wikidata_then_wikipedia"),
+        default="wikipedia",
+        help="API order for resolving entity titles to Wikidata QIDs",
+    )
+    parser.add_argument(
+        "--entity-backend",
+        choices=("ollama", "relik"),
+        default="ollama",
+        help="Backend for the alternative M2 implementation",
+    )
+    parser.add_argument("--relik-model", help="ReLiK model name or local path")
+    parser.add_argument("--device", help="ReLiK device, for example cpu or cuda")
+    parser.add_argument(
+        "--m1-mode",
+        choices=("paragraphs_with_titles", "chunked", "pointer_titles"),
+        default="paragraphs_with_titles",
+        help="M1 text processing mode",
+    )
+    parser.add_argument(
+        "--m3-module",
+        choices=("standard", "narratia"),
+        default="standard",
+        help="M3 implementation to use",
+    )
     args = parser.parse_args(argv)
 
     settings = WorkflowSettings.from_env(Path(__file__).resolve().parents[2])
@@ -228,6 +328,12 @@ def main(argv: list[str] | None = None) -> int:
             title=args.title,
             entity_module=args.entity_module,
             entity_model=args.entity_model,
+            resolution_strategy=args.resolution_strategy,
+            entity_backend=args.entity_backend,
+            relik_model=args.relik_model,
+            device=args.device,
+            m1_mode=args.m1_mode,
+            m3_module=args.m3_module,
         )
     except Exception as exc:
         LOGGER.error("Pipeline failed: %s", exc)

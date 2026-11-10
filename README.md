@@ -25,7 +25,7 @@ run_pipeline.py                Backward-compatible pipeline wrapper
 ## Requirements
 
 - Python 3.11+
-- Ollama installed and running for `.txt` processing and entity extraction
+- Ollama installed and running for `.txt`/`.md` processing and entity extraction
 - Ollama model configured by `AUTOMATIC_WORKFLOW_OLLAMA_MODEL` defaulting to `gemma3:12b`
 - Java installed for OWL generation through `M3-graph/Triplify/Triplify.jar`
 
@@ -70,6 +70,33 @@ Run the full workflow with the backward-compatible script:
 python run_pipeline.py "path\to\input.txt"
 ```
 
+Markdown files are accepted as narrative input as well:
+
+```bash
+python run_pipeline.py "path\to\input.md"
+```
+
+To process long texts in overlapping blocks of 500 words:
+
+```bash
+python run_pipeline.py --m1-mode chunked "path\to\input.md"
+```
+
+The chunked mode uses 50 overlapping words and removes the repeated overlap
+when rebuilding the events. M1 reports whether the rebuilt text matches the
+input, ignoring only whitespace and line-break differences.
+
+To let the LLM mark paragraph boundaries while keeping the actual slicing
+deterministic:
+
+```bash
+python run_pipeline.py --m1-mode pointer_titles "path\to\input.md"
+```
+
+In this mode the LLM returns exact `start`/`end` text markers. M1 uses those
+markers to slice the original text, checks complete coverage, and then asks
+the model to generate one title per event.
+
 If the first line of the TXT is the narrative title, enable first-line title mode:
 
 ```bash
@@ -92,6 +119,57 @@ geographic entities and adds images from Wikipedia pages, run:
 ```bash
 python run_pipeline.py --entity-module alternative --entity-model "llama3.1:8b" "path\to\input.txt"
 ```
+
+M2 supports four entity-resolution strategies for recovering QIDs:
+
+```powershell
+python run_pipeline.py `
+  --resolution-strategy wikidata_then_wikipedia `
+  --entity-model "gemma4:12b" `
+  "path\to\input.md"
+```
+
+Available values are `wikipedia` (default), `wikidata`,
+`wikipedia_then_wikidata`, and `wikidata_then_wikipedia`. The combined modes
+keep QIDs found by the first endpoint and query the second endpoint only for
+titles that are still unresolved.
+
+To use the alternative Narratia M3 implementation:
+
+```powershell
+python run_pipeline.py `
+  --m3-module narratia `
+  --entity-model "gemma4:12b" `
+  "path\to\input.md"
+```
+
+M3 Ollama classification is enabled with:
+
+```powershell
+$env:AUTOMATIC_WORKFLOW_M3_USE_LLM = "1"
+$env:AUTOMATIC_WORKFLOW_M3_OLLAMA_MODEL = "gemma4:12b"
+```
+
+To use the ReLiK backend, run the workflow with the dedicated environment that
+contains ReLiK, spaCy, Torch, and Transformers:
+
+```powershell
+.\relik-venv\Scripts\python.exe run_pipeline.py `
+  --entity-module alternative `
+  --entity-backend relik `
+  --relik-model "sapienzanlp/relik-entity-linking-small" `
+  --device cpu `
+  "path\to\input.md"
+```
+
+The classic entity extractor is the default and uses Ollama:
+
+```powershell
+python run_pipeline.py --entity-module original "path\to\input.md"
+```
+
+The ReLiK backend is available only through `M2-Entities-alternative`; it
+shares the same QID CSV output contract as the classic extractor.
 
 The original M2 extractor remains the default. The alternative extractor
 returns the same `*_qids.csv` format, so M3 can consume it without changes.
@@ -125,7 +203,7 @@ M3 asks Ollama whether each generated slide should be `geographic` or `normal`. 
 
 ## Workflow
 
-1. M1 reads a `.txt` input and creates `M1-Create_Narratives-alternative-2/output/<name>.csv`.
+1. M1 reads a `.txt` or `.md` input and creates `M1-Create_Narratives-alternative-2/output/<name>.csv`.
 2. The pipeline copies that CSV into `M2-Entities/input/`.
 3. M2 creates `M2-Entities/output/<name>_qids.csv`.
 4. The pipeline copies that CSV into `M3-graph/input/`.

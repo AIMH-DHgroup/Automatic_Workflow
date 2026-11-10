@@ -1,4 +1,4 @@
-"""Alternative M2 entity enrichment focused on map-ready entities.
+﻿"""Alternative M2 entity enrichment focused on map-ready entities.
 
 The original `M2-Entities` module is intentionally left unchanged. This module
 reuses its stable CSV/Wikidata output contract while changing the entity prompt
@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,8 @@ if SPEC is None or SPEC.loader is None:  # pragma: no cover
     raise ImportError(f"Unable to load original M2 module from {ORIGINAL_PATH}")
 ORIGINAL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ORIGINAL)
+ORIGINAL_FETCH_QIDS = ORIGINAL.fetch_wikidata_qids_from_titles
+ORIGINAL_FETCH_DETAILS = ORIGINAL.fetch_wikidata_details_by_qids
 
 INPUT_DIR = Path(__file__).resolve().parent / "input"
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
@@ -70,6 +73,34 @@ def useLLM(text: str) -> str:
 
 
 useLLM.model = "gemma3:12b"  # type: ignore[attr-defined]
+
+class RelikEntityLinker:
+    """Run local ReLiK and return the JSON entity shape expected by original M2."""
+
+    def __init__(self, model_name: str, device: str | None = None) -> None:
+        try:
+            import sys as _sys
+            _sys.maxsize = 2147483647
+            import spacy  # noqa: F401
+            from relik import Relik
+        except ImportError as exc:
+            raise RuntimeError("ReLiK backend needs relik, spaCy, Torch and Transformers") from exc
+        kwargs = {"device": device} if device else {}
+        self.model = Relik.from_pretrained(model_name, **kwargs)
+
+    def __call__(self, text: str) -> str:
+        # Relik imports sys.maxsize in worker processes; zero workers avoids a
+        # Windows multiprocessing crash caused by csv.field_size_limit(sys.maxsize).
+        output = self.model(text, num_workers=0)
+        entities, seen = [], set()
+        for span in getattr(output, "spans", []) or []:
+            surface = str(getattr(span, "text", "")).strip()
+            title = str(getattr(span, "label", "") or surface).strip()
+            if not surface or (surface, title) in seen:
+                continue
+            seen.add((surface, title))
+            entities.append({"entity_in_the_text": surface, "wikipedia_title": title})
+        return json.dumps({"entities": entities}, ensure_ascii=False)
 
 
 def fetch_wikipedia_images(titles: list[str]) -> dict[str, list[str]]:
@@ -125,7 +156,7 @@ def fetch_wikipedia_images(titles: list[str]) -> dict[str, list[str]]:
 def fetch_wikidata_qids_from_titles(titles: list[str]) -> dict[str, str | None]:
     """Resolve titles through the original Wikipedia-to-Wikidata function."""
 
-    result = ORIGINAL.fetch_wikidata_qids_from_titles(titles)
+    result = ORIGINAL_FETCH_QIDS(titles)
     _QID_TO_WIKIPEDIA_TITLE.clear()
     for title, qid in result.items():
         if qid:
@@ -136,7 +167,7 @@ def fetch_wikidata_qids_from_titles(titles: list[str]) -> dict[str, str | None]:
 def fetch_wikidata_details_by_qids(qids: list[str]) -> dict[str, dict[str, Any]]:
     """Combine Wikidata images with images returned by Wikipedia pages."""
 
-    details = ORIGINAL.fetch_wikidata_details_by_qids(qids)
+    details = ORIGINAL_FETCH_DETAILS(qids)
     wikipedia_images = fetch_wikipedia_images(list(_QID_TO_WIKIPEDIA_TITLE.values()))
     for qid in qids:
         title = _QID_TO_WIKIPEDIA_TITLE.get(qid)
@@ -160,6 +191,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.getenv("AUTOMATIC_WORKFLOW_ALTERNATIVE_ENTITY_MODEL", "gemma3:12b"),
         help="Ollama model for alternative M2",
     )
+    parser.add_argument("--backend", choices=("ollama", "relik"), default="ollama", help="Entity linker backend")
+    parser.add_argument("--relik-model", default="sapienzanlp/relik-entity-linking-small", help="ReLiK model name or local path")
+    parser.add_argument("--device", default=None, help="ReLiK device, e.g. cpu or cuda")
     return parser.parse_args(argv)
 
 
@@ -168,14 +202,16 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parse_args(argv)
     useLLM.model = args.model  # type: ignore[attr-defined]
+    relik = RelikEntityLinker(args.relik_model, args.device) if args.backend == "relik" else None
     original_functions = {
         "useLLM": ORIGINAL.useLLM,
-        "fetch_wikidata_qids_from_titles": ORIGINAL.fetch_wikidata_qids_from_titles,
-        "fetch_wikidata_details_by_qids": ORIGINAL.fetch_wikidata_details_by_qids,
+        "relik": relik,
+        "fetch_wikidata_qids_from_titles": ORIGINAL_FETCH_QIDS,
+        "fetch_wikidata_details_by_qids": ORIGINAL_FETCH_DETAILS,
         "INPUT_DIR": ORIGINAL.INPUT_DIR,
         "OUTPUT_DIR": ORIGINAL.OUTPUT_DIR,
     }
-    ORIGINAL.useLLM = useLLM
+    ORIGINAL.useLLM = relik if relik is not None else useLLM
     ORIGINAL.fetch_wikidata_qids_from_titles = fetch_wikidata_qids_from_titles
     ORIGINAL.fetch_wikidata_details_by_qids = fetch_wikidata_details_by_qids
     ORIGINAL.INPUT_DIR = str(INPUT_DIR)
