@@ -466,6 +466,7 @@ def fetch_extra_sparql(qid: str, query_body: str) -> list[dict[str, Any]]:
         "PREFIX wd: <http://www.wikidata.org/entity/>\n"
         "PREFIX wdt: <http://www.wikidata.org/prop/direct/>\n"
         "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\n"
+        "PREFIX schema: <http://schema.org/>\n"
         + query_body.replace("__QID__", "wd:" + qid)
     )
     url = "https://query.wikidata.org/sparql?format=json&query=" + quote(query)
@@ -539,18 +540,53 @@ def fetch_archaeological_parts(qid: str) -> list[dict[str, str]]:
     rows = fetch_extra_sparql(
         qid,
         """
-SELECT DISTINCT ?part ?partItLabel ?partEnLabel WHERE {
+SELECT DISTINCT ?part ?partItLabel ?partEnLabel ?itDesc ?enDesc WHERE {
   { __QID__ wdt:P9047 ?part. }
   UNION { __QID__ wdt:P527 ?part. }
   UNION { ?part wdt:P361 __QID__. }
   FILTER(STRSTARTS(STR(?part), "http://www.wikidata.org/entity/Q"))
   OPTIONAL { ?part rdfs:label ?partItLabel. FILTER(LANG(?partItLabel) = "it") }
   OPTIONAL { ?part rdfs:label ?partEnLabel. FILTER(LANG(?partEnLabel) = "en") }
+  OPTIONAL { ?part schema:description ?itDesc. FILTER(LANG(?itDesc) = "it") }
+  OPTIONAL { ?part schema:description ?enDesc. FILTER(LANG(?enDesc) = "en") }
 }
 LIMIT 5000
 """,
     )
-    return linked_entities_from_rows(rows, "part", "partItLabel", "partEnLabel")
+    found: dict[str, dict[str, str]] = {}
+    for row in rows:
+        uri = row.get("part", {}).get("value", "")
+        qid = uri.rsplit("/", 1)[-1]
+        if not re.fullmatch(r"Q[1-9][0-9]*", qid):
+            continue
+
+        it_name = row.get("partItLabel", {}).get("value", "")
+        en_name = row.get("partEnLabel", {}).get("value", "")
+        part = found.setdefault(
+            qid,
+            {
+                "qid": qid,
+                "label": en_name or it_name or qid,
+                "url": build_wikidata_link(qid),
+                "itName": it_name,
+                "enName": en_name,
+                "itDesc": row.get("itDesc", {}).get("value", ""),
+                "enDesc": row.get("enDesc", {}).get("value", ""),
+            },
+        )
+        # SPARQL may return multiple rows for one part. Fill fields from any
+        # row that supplies them while preserving English-first label choice.
+        for field, binding in (
+            ("itName", "partItLabel"),
+            ("enName", "partEnLabel"),
+            ("itDesc", "itDesc"),
+            ("enDesc", "enDesc"),
+        ):
+            if not part[field]:
+                part[field] = row.get(binding, {}).get("value", "")
+        part["label"] = part["enName"] or part["itName"] or qid
+
+    return list(found.values())
 
 
 def add_special_entity_fields(entity: dict[str, Any], bindings: list[dict[str, Any]]) -> None:
